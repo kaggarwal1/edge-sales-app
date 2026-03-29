@@ -18,7 +18,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# --- SESSION STATE MANAGEMENT ---
+# --- SESSION STATE MANAGEMENT (Fixes Tab-Switching Reset) ---
 if "ticker" not in st.session_state:
     st.session_state.ticker = "DE"
 if "persona" not in st.session_state:
@@ -84,7 +84,6 @@ with st.sidebar:
     if app_mode == "🏆 Account Leaderboard":
         ticker_input = st.text_input("Enter Tickers (comma separated):", "F, GM, TSLA, TM").upper()
     else:
-        # Syncing inputs with session state
         st.session_state.ticker = st.text_input("Active Account Ticker:", st.session_state.ticker).upper()
         st.session_state.persona = st.selectbox("Persona:", ["VP Engineering", "CTO", "Head of Manufacturing", "Director Innovation"], 
                                               index=["VP Engineering", "CTO", "Head of Manufacturing", "Director Innovation"].index(st.session_state.persona))
@@ -94,8 +93,6 @@ with st.sidebar:
 try:
     if app_mode == "🏆 Account Leaderboard":
         st.title("Strategic Portfolio Prioritization")
-        st.write("Comparing accounts based on market momentum and Edge AI fit.")
-        
         tickers = [t.strip() for t in ticker_input.split(",")]
         comparison_data = []
         
@@ -167,5 +164,14 @@ try:
                     
                     if articles:
                         context = "\n".join([f"- {a['title']}" for a in articles[:8]])
-                        model = genai.GenerativeModel('gemini-2.5-flash')
-                        res = model.generate_content(f"Act as a Sales Research Assistant. Based on this news for {name}, provide: 1. Top 3 Takeaways, 2. The Edge Impulse Angle, 3.
+                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        res = model.generate_content(f"Act as a Sales Research Assistant. Based on this news for {name}, provide: 1. Top 3 Takeaways, 2. The Edge Impulse Angle, 3. A punchy email icebreaker line. News: \n{context}")
+                        st.markdown(f'<div class="report-box">{res.text}</div>', unsafe_allow_html=True)
+                    else: st.info("No major strategic news found in the last 7 days.")
+
+        elif app_mode == "🕸️ Account Map":
+            st.subheader("Predicted Stakeholder Map")
+            if st.button("Generate Strategic Org Chart"):
+                with st.spinner("Mapping the organization..."):
+                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    res = model.generate_content(f"Identify the likely Decision Making Unit for an Edge AI deal at {name}. Include roles like CTO, VP
