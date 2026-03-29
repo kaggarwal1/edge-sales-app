@@ -79,6 +79,8 @@ init_session()
 NEWS_API_KEY = _env("NEWS_API_KEY")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
 GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-1.5-flash")
+# Optional: fills sector, website, employees when Yahoo throttles (https://site.financialmodelingprep.com/developer/docs)
+FMP_API_KEY = _env("FMP_API_KEY")
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -295,7 +297,70 @@ def _merge_info(primary: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any
     return merged
 
 
-@st.cache_data(ttl=600, show_spinner="Loading market data…")
+def _yahoo_info_looks_broken(info: dict[str, Any]) -> bool:
+    """True when we still have nothing usable after merges (Yahoo stub / rate limit)."""
+    if not info:
+        return True
+    has_name = bool(info.get("shortName") or info.get("longName") or info.get("symbol"))
+    has_price = _safe_float(info.get("currentPrice") or info.get("regularMarketPrice"), 0.0) > 0
+    has_profile = bool(
+        info.get("sector")
+        or info.get("website")
+        or info.get("longBusinessSummary")
+        or info.get("fullTimeEmployees")
+    )
+    return not (has_name or has_price or has_profile)
+
+
+def enrich_profile_fmp(ticker: str) -> dict[str, Any]:
+    """Company profile from Financial Modeling Prep (optional API key)."""
+    if not FMP_API_KEY:
+        return {}
+    try:
+        r = requests.get(
+            f"https://financialmodelingprep.com/api/v3/profile/{ticker.upper()}",
+            params={"apikey": FMP_API_KEY},
+            timeout=15,
+        )
+        if r.status_code == 429:
+            return {}
+        r.raise_for_status()
+        data = r.json()
+        if not data or not isinstance(data, list):
+            return {}
+        row = data[0]
+        out: dict[str, Any] = {}
+        if row.get("companyName"):
+            out["longName"] = row["companyName"]
+            if not out.get("shortName"):
+                out["shortName"] = row["companyName"]
+        if row.get("website"):
+            out["website"] = str(row["website"]).strip()
+        if row.get("sector"):
+            out["sector"] = str(row["sector"]).strip()
+        if row.get("industry"):
+            out["industry"] = str(row["industry"]).strip()
+        emp_raw = row.get("fullTimeEmployees")
+        if emp_raw is None:
+            emp_raw = row.get("employeeCount")
+        if emp_raw is not None:
+            try:
+                out["fullTimeEmployees"] = int(float(emp_raw))
+            except (TypeError, ValueError):
+                pass
+        if row.get("description"):
+            out["longBusinessSummary"] = str(row["description"])
+        if row.get("mktCap"):
+            try:
+                out["marketCap"] = float(row["mktCap"])
+            except (TypeError, ValueError):
+                pass
+        return out
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=900, show_spinner="Loading market data…")
 def get_market_snapshot(ticker: str, period: str = "1y") -> tuple[dict[str, Any], pd.DataFrame, str | None]:
     """
     Fetch quote + history with retries. Cached to avoid hammering Yahoo on every Streamlit rerun
@@ -306,18 +371,23 @@ def get_market_snapshot(ticker: str, period: str = "1y") -> tuple[dict[str, Any]
     hist = pd.DataFrame()
     warning: str | None = None
 
-    for attempt in range(5):
+    for attempt in range(6):
         try:
             t = yf.Ticker(ticker)
             raw = t.info
             info = raw if isinstance(raw, dict) else {}
-            if len(info) > 8:
+            if not _yahoo_info_looks_broken(info) and len(info) > 8:
                 break
-        except Exception as e:
-            if _rate_limited(e) and attempt < 4:
-                time.sleep(min(20.0, 1.5 ** (attempt + 3)))
+            if attempt < 5 and (_yahoo_info_looks_broken(info) or len(info) <= 8):
+                time.sleep(min(25.0, 2.0 * (attempt + 1)))
                 continue
-            warning = str(e)
+            break
+        except Exception as e:
+            if _rate_limited(e) and attempt < 5:
+                time.sleep(min(25.0, 2.5 * (attempt + 1)))
+                continue
+            if not _rate_limited(e):
+                warning = str(e)
             break
 
     try:
@@ -326,28 +396,30 @@ def get_market_snapshot(ticker: str, period: str = "1y") -> tuple[dict[str, Any]
     except Exception:
         pass
 
-    for attempt in range(5):
+    info = _merge_info(info, enrich_profile_fmp(ticker))
+
+    for attempt in range(6):
         try:
             t = yf.Ticker(ticker)
             hist = t.history(period=period, auto_adjust=True)
             if not hist.empty:
                 break
         except Exception as e:
-            if _rate_limited(e) and attempt < 4:
-                time.sleep(min(20.0, 1.5 ** (attempt + 3)))
+            if _rate_limited(e) and attempt < 5:
+                time.sleep(min(25.0, 2.5 * (attempt + 1)))
                 continue
-            if warning is None:
+            if warning is None and not _rate_limited(e):
                 warning = str(e)
             break
 
-    if len(info) < 5 and hist.empty:
-        if warning is None:
-            warning = (
-                "Yahoo Finance is rate-limiting or unavailable. "
-                "Wait a few minutes, click **Refresh market data** in the sidebar, or try again later."
-            )
-    elif len(info) < 12 and warning is None:
-        warning = "Partial quote data — Yahoo Finance may be throttling the full company profile."
+    if _yahoo_info_looks_broken(info) and hist.empty:
+        warning = (
+            "Market data unavailable (Yahoo may be rate-limiting). "
+            "Wait, use **Refresh market data**, or add `FMP_API_KEY` for company profile backup."
+        )
+
+    if warning and "too many requests" in str(warning).lower():
+        warning = "Data provider rate limit — try again shortly or tap **Refresh market data**."
 
     return info, hist, warning
 
@@ -379,9 +451,9 @@ def build_price_chart(df: pd.DataFrame, name: str) -> go.Figure:
     return fig
 
 
-def fetch_company_news(company_query: str, ticker: str) -> pd.DataFrame:
+def fetch_company_news(company_query: str, ticker: str) -> tuple[pd.DataFrame, str | None]:
     if not NEWS_API_KEY:
-        return pd.DataFrame()
+        return pd.DataFrame(), None
     q = f'"{company_query}" OR {ticker}'
     url = "https://newsapi.org/v2/everything"
     params = {
@@ -393,22 +465,40 @@ def fetch_company_news(company_query: str, ticker: str) -> pd.DataFrame:
     }
     try:
         r = requests.get(url, params=params, timeout=12)
+        if r.status_code == 429:
+            return (
+                pd.DataFrame(),
+                "NewsAPI rate limit — wait a bit or upgrade your NewsAPI plan.",
+            )
         r.raise_for_status()
         data = r.json()
+        if data.get("status") == "error":
+            msg = data.get("message") or "NewsAPI error."
+            if "rate" in msg.lower() or "429" in msg:
+                msg = "NewsAPI rate limit — try again later."
+            return pd.DataFrame(), msg
         articles = data.get("articles") or []
+        junk = ("too many requests", "rate limit", "[removed]", "429")
         rows = []
         for a in articles:
+            title = (a.get("title") or "").strip()
+            if not title or any(j in title.lower() for j in junk):
+                continue
             rows.append(
                 {
                     "Published": a.get("publishedAt", "")[:16].replace("T", " "),
-                    "Title": a.get("title") or "",
+                    "Title": title,
                     "Source": (a.get("source") or {}).get("name") or "",
                     "URL": a.get("url") or "",
                 }
             )
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows), None
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 429:
+            return pd.DataFrame(), "NewsAPI rate limit — try again later."
+        return pd.DataFrame(), "Could not load news (network or API error)."
     except Exception:
-        return pd.DataFrame()
+        return pd.DataFrame(), "Could not load news (network or API error)."
 
 
 def concierge_system_prompt(name: str, ticker: str, persona: str, sector: str) -> str:
@@ -470,17 +560,23 @@ with st.sidebar:
     if st.button("Refresh market data", help="Clears cached Yahoo Finance data and reloads quotes."):
         get_market_snapshot.clear()
         st.rerun()
+    if FMP_API_KEY:
+        st.caption("FMP backup: on (fills profile if Yahoo throttles).")
+    else:
+        st.caption("Optional: set `FMP_API_KEY` for sector, website, headcount when Yahoo is slow.")
 
 # --- MAIN ---
 ticker = st.session_state.ticker or DEFAULT_TICKER
 info, hist, yf_warning = get_market_snapshot(ticker)
 
 if yf_warning:
-    st.warning(yf_warning)
+    with st.sidebar:
+        st.caption("Quote status: " + yf_warning.replace("**", ""))
 
 name = info.get("shortName") or info.get("longName") or ticker
-sector = info.get("sector") or "—"
-industry = info.get("industry") or "—"
+sector = (info.get("sector") or "").strip() or "—"
+industry = (info.get("industry") or "").strip() or "—"
+exchange = (info.get("exchange") or info.get("fullExchangeName") or "").strip()
 
 price = _safe_float(
     info.get("currentPrice") or info.get("regularMarketPrice"),
@@ -489,18 +585,18 @@ price = _safe_float(
 change_pct = _safe_float(info.get("regularMarketChangePercent"), 0.0)
 
 if not info and hist.empty:
-    st.error(
-        f"Could not load market data for `{ticker}`. "
-        "ROI Calculator and Account Leaderboard still work below. "
-        "Try **Refresh market data** in the sidebar in a few minutes."
+    st.caption(
+        f"Could not load market data for `{ticker}` — ROI and Leaderboard still work below. "
+        "Try **Refresh market data** shortly."
     )
 
 col_title, col_metric = st.columns([3, 1])
 with col_title:
     st.title(f"{name}")
+    eq_bit = f" &nbsp;·&nbsp; {exchange}" if exchange else ""
     st.markdown(
         f'<p class="section-label">Public equity</p>'
-        f'<p style="margin-top:0;"><strong>{ticker}</strong> &nbsp;·&nbsp; '
+        f'<p style="margin-top:0;"><strong>{ticker}</strong>{eq_bit} &nbsp;·&nbsp; '
         f"{sector} &nbsp;·&nbsp; {industry}</p>",
         unsafe_allow_html=True,
     )
@@ -551,8 +647,10 @@ if app_mode == "Executive Summary":
     with c3:
         st.markdown('<p class="section-label">Snapshot</p>', unsafe_allow_html=True)
         mc = _safe_float(info.get("marketCap"), 0)
-        emp = int(_safe_float(info.get("fullTimeEmployees"), 0))
-        web = (info.get("website") or "").strip() or "—"
+        emp_raw = info.get("fullTimeEmployees")
+        emp = int(_safe_float(emp_raw, 0)) if emp_raw is not None else 0
+        web_raw = (info.get("website") or "").strip()
+        web = web_raw or "—"
         emp_html = (
             f"<p><strong>Employees</strong><br>{emp:,}</p>"
             if emp
@@ -573,6 +671,10 @@ if app_mode == "Executive Summary":
             f"</div>",
             unsafe_allow_html=True,
         )
+        if not FMP_API_KEY and (sector == "—" or web == "—" or not emp):
+            st.caption(
+                "Missing fields? Yahoo may be throttled — add `FMP_API_KEY` in secrets for reliable profile data."
+            )
 
 elif app_mode == "Weekly News Digest":
     st.subheader("Signal from the wire")
@@ -582,8 +684,10 @@ elif app_mode == "Weekly News Digest":
             "Add `NEWS_API_KEY` to `.env` or secrets to load live headlines. "
             "See https://newsapi.org/register"
         )
-    df_news = fetch_company_news(name, ticker)
-    if df_news.empty and NEWS_API_KEY:
+    df_news, news_err = fetch_company_news(name, ticker)
+    if news_err:
+        st.caption(news_err)
+    if df_news.empty and NEWS_API_KEY and not news_err:
         st.info("No articles returned — try a different ticker or check API quota.")
     elif not df_news.empty:
         st.dataframe(
