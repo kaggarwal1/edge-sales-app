@@ -6,6 +6,7 @@ pipeline context, and AI-assisted outreach (Gemini).
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime
 from typing import Any
 
@@ -237,12 +238,118 @@ def calculate_fit_score(info: dict[str, Any]) -> tuple[int, str, str]:
     return score, "Tier C — qualify", "tier-c"
 
 
-def fetch_price_history(ticker: str, period: str = "1y") -> pd.DataFrame:
-    t = yf.Ticker(ticker)
-    hist = t.history(period=period, auto_adjust=True)
-    if hist.empty:
-        return pd.DataFrame()
-    return hist
+def _rate_limited(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return any(
+        x in s
+        for x in (
+            "too many requests",
+            "rate limit",
+            "429",
+            "expecting value",
+            "blocked",
+        )
+    )
+
+
+def _try_fast_info_dict(t: yf.Ticker) -> dict[str, Any]:
+    """Lighter Yahoo path — often works when `.info` is throttled."""
+    out: dict[str, Any] = {}
+    try:
+        fi = t.fast_info
+        if isinstance(fi, dict):
+            d = fi
+        else:
+            d = {k: getattr(fi, k, None) for k in dir(fi) if not k.startswith("_")}
+            for key in (
+                "last_price",
+                "market_cap",
+                "shares",
+                "currency",
+                "exchange",
+                "timezone",
+            ):
+                if key not in d and hasattr(fi, key):
+                    d[key] = getattr(fi, key, None)
+        lp = d.get("last_price") or d.get("lastPrice")
+        if lp is not None:
+            out["currentPrice"] = float(lp)
+        mc = d.get("market_cap") or d.get("marketCap")
+        if mc is not None:
+            out["marketCap"] = float(mc)
+        sn = d.get("shortName") or d.get("short_name")
+        if sn:
+            out["shortName"] = str(sn)
+    except Exception:
+        pass
+    return out
+
+
+def _merge_info(primary: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(primary)
+    for k, v in extra.items():
+        if v is None:
+            continue
+        if k not in merged or merged[k] in (None, "", 0):
+            merged[k] = v
+    return merged
+
+
+@st.cache_data(ttl=600, show_spinner="Loading market data…")
+def get_market_snapshot(ticker: str, period: str = "1y") -> tuple[dict[str, Any], pd.DataFrame, str | None]:
+    """
+    Fetch quote + history with retries. Cached to avoid hammering Yahoo on every Streamlit rerun
+    (shared hosting often hits 'Too Many Requests').
+    Returns (info, history, optional warning for the UI).
+    """
+    info: dict[str, Any] = {}
+    hist = pd.DataFrame()
+    warning: str | None = None
+
+    for attempt in range(5):
+        try:
+            t = yf.Ticker(ticker)
+            raw = t.info
+            info = raw if isinstance(raw, dict) else {}
+            if len(info) > 8:
+                break
+        except Exception as e:
+            if _rate_limited(e) and attempt < 4:
+                time.sleep(min(20.0, 1.5 ** (attempt + 3)))
+                continue
+            warning = str(e)
+            break
+
+    try:
+        t = yf.Ticker(ticker)
+        info = _merge_info(info, _try_fast_info_dict(t))
+    except Exception:
+        pass
+
+    for attempt in range(5):
+        try:
+            t = yf.Ticker(ticker)
+            hist = t.history(period=period, auto_adjust=True)
+            if not hist.empty:
+                break
+        except Exception as e:
+            if _rate_limited(e) and attempt < 4:
+                time.sleep(min(20.0, 1.5 ** (attempt + 3)))
+                continue
+            if warning is None:
+                warning = str(e)
+            break
+
+    if len(info) < 5 and hist.empty:
+        if warning is None:
+            warning = (
+                "Yahoo Finance is rate-limiting or unavailable. "
+                "Wait a few minutes, click **Refresh market data** in the sidebar, or try again later."
+            )
+    elif len(info) < 12 and warning is None:
+        warning = "Partial quote data — Yahoo Finance may be throttling the full company profile."
+
+    return info, hist, warning
 
 
 def build_price_chart(df: pd.DataFrame, name: str) -> go.Figure:
@@ -360,250 +467,254 @@ with st.sidebar:
         index=0,
     )
     st.caption("News uses NewsAPI when `NEWS_API_KEY` is set.")
+    if st.button("Refresh market data", help="Clears cached Yahoo Finance data and reloads quotes."):
+        get_market_snapshot.clear()
+        st.rerun()
 
 # --- MAIN ---
-try:
-    ticker = st.session_state.ticker or DEFAULT_TICKER
-    stock = yf.Ticker(ticker)
-    info = stock.info or {}
-    if not info or info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
-        # yfinance sometimes returns sparse dict; still try name
-        pass
-    name = info.get("shortName") or info.get("longName") or ticker
-    sector = info.get("sector") or "—"
-    industry = info.get("industry") or "—"
+ticker = st.session_state.ticker or DEFAULT_TICKER
+info, hist, yf_warning = get_market_snapshot(ticker)
 
-    price = _safe_float(
-        info.get("currentPrice") or info.get("regularMarketPrice"),
-        0.0,
+if yf_warning:
+    st.warning(yf_warning)
+
+name = info.get("shortName") or info.get("longName") or ticker
+sector = info.get("sector") or "—"
+industry = info.get("industry") or "—"
+
+price = _safe_float(
+    info.get("currentPrice") or info.get("regularMarketPrice"),
+    0.0,
+)
+change_pct = _safe_float(info.get("regularMarketChangePercent"), 0.0)
+
+if not info and hist.empty:
+    st.error(
+        f"Could not load market data for `{ticker}`. "
+        "ROI Calculator and Account Leaderboard still work below. "
+        "Try **Refresh market data** in the sidebar in a few minutes."
     )
-    change_pct = _safe_float(info.get("regularMarketChangePercent"), 0.0)
 
-    col_title, col_metric = st.columns([3, 1])
-    with col_title:
-        st.title(f"{name}")
-        st.markdown(
-            f'<p class="section-label">Public equity</p>'
-            f'<p style="margin-top:0;"><strong>{ticker}</strong> &nbsp;·&nbsp; '
-            f"{sector} &nbsp;·&nbsp; {industry}</p>",
-            unsafe_allow_html=True,
-        )
-    with col_metric:
-        st.markdown('<div class="metric-shell">', unsafe_allow_html=True)
-        st.metric("Last price", f"${price:,.2f}" if price else "—", f"{change_pct:+.2f}%")
-        label, pill_cls = get_recommendation_label(info)
-        st.markdown(
-            f'<span class="analyst-pill {pill_cls}">Consensus: {label}</span>',
-            unsafe_allow_html=True,
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
+col_title, col_metric = st.columns([3, 1])
+with col_title:
+    st.title(f"{name}")
+    st.markdown(
+        f'<p class="section-label">Public equity</p>'
+        f'<p style="margin-top:0;"><strong>{ticker}</strong> &nbsp;·&nbsp; '
+        f"{sector} &nbsp;·&nbsp; {industry}</p>",
+        unsafe_allow_html=True,
+    )
+with col_metric:
+    st.markdown('<div class="metric-shell">', unsafe_allow_html=True)
+    st.metric("Last price", f"${price:,.2f}" if price else "—", f"{change_pct:+.2f}%")
+    label, pill_cls = get_recommendation_label(info)
+    st.markdown(
+        f'<span class="analyst-pill {pill_cls}">Consensus: {label}</span>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
+st.divider()
 
-    if app_mode == "Executive Summary":
-        score, tier_label, tier_cls = calculate_fit_score(info)
-        c1, c2, c3 = st.columns([1.6, 1, 1])
+if app_mode == "Executive Summary":
+    score, tier_label, tier_cls = calculate_fit_score(info)
+    c1, c2, c3 = st.columns([1.6, 1, 1])
 
-        with c1:
-            st.subheader("Narrative")
-            summary = info.get("longBusinessSummary") or "No business summary available."
-            st.write(summary[:1200] + ("…" if len(summary) > 1200 else ""))
-            with st.expander("Full company description"):
-                st.write(summary)
+    with c1:
+        st.subheader("Narrative")
+        summary = info.get("longBusinessSummary") or "No business summary available."
+        st.write(summary[:1200] + ("…" if len(summary) > 1200 else ""))
+        with st.expander("Full company description"):
+            st.write(summary)
 
-            hist = fetch_price_history(ticker)
-            if not hist.empty:
-                st.plotly_chart(
-                    build_price_chart(hist, name),
-                    use_container_width=True,
-                )
-            else:
-                st.info("Price history unavailable for this symbol.")
-
-        with c2:
-            st.markdown('<p class="section-label">Strategic fit</p>', unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="fit-ring">'
-                f'<div class="section-label" style="margin-bottom:0.5rem;">Account score</div>'
-                f'<div class="fit-score">{score}</div>'
-                f'<div class="tier-pill {tier_cls}">{tier_label}</div>'
-                f"<p style='font-size:0.85rem;color:#5c6370;margin-top:1rem;'>"
-                f"Heuristic from sector, scale, and volatility — tune for your ICP.</p>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-
-        with c3:
-            st.markdown('<p class="section-label">Snapshot</p>', unsafe_allow_html=True)
-            mc = _safe_float(info.get("marketCap"), 0)
-            emp = int(_safe_float(info.get("fullTimeEmployees"), 0))
-            web = (info.get("website") or "").strip() or "—"
-            emp_html = (
-                f"<p><strong>Employees</strong><br>{emp:,}</p>"
-                if emp
-                else "<p><strong>Employees</strong><br>—</p>"
-            )
-            if web == "—":
-                web_html = "<p><strong>Website</strong><br>—</p>"
-            else:
-                href = web if web.startswith("http") else f"https://{web}"
-                web_html = (
-                    f"<p><strong>Website</strong><br>"
-                    f"<a href=\"{href}\" target=\"_blank\" rel=\"noopener noreferrer\">{web}</a></p>"
-                )
-            st.markdown(
-                f'<div class="metric-shell">'
-                f"<p><strong>Market cap</strong><br>{format_usd_compact(mc) if mc else '—'}</p>"
-                f"{emp_html}{web_html}"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-
-    elif app_mode == "Weekly News Digest":
-        st.subheader("Signal from the wire")
-        st.caption("Recent articles mentioning the company or ticker (NewsAPI).")
-        if not NEWS_API_KEY:
-            st.warning(
-                "Add `NEWS_API_KEY` to `.env` or secrets to load live headlines. "
-                "See https://newsapi.org/register"
-            )
-        df_news = fetch_company_news(name, ticker)
-        if df_news.empty and NEWS_API_KEY:
-            st.info("No articles returned — try a different ticker or check API quota.")
-        elif not df_news.empty:
-            st.dataframe(
-                df_news,
+        if not hist.empty:
+            st.plotly_chart(
+                build_price_chart(hist, name),
                 use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "URL": st.column_config.LinkColumn("Article"),
-                    "Title": st.column_config.TextColumn("Headline", width="large"),
-                },
             )
+        else:
+            st.info("Price history unavailable for this symbol.")
 
-    elif app_mode == "Account Leaderboard":
-        st.subheader("Pipeline leaderboard")
-        st.caption("Demo data — replace with CRM export or connect your data source.")
-        edited = st.data_editor(
-            st.session_state.leaderboard_rows,
-            num_rows="dynamic",
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Est. ARR ($K)": st.column_config.NumberColumn(format="%d"),
-            },
-        )
-        st.session_state.leaderboard_rows = edited
-        csv_bytes = edited.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download CSV",
-            data=csv_bytes,
-            file_name=f"leaderboard_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-        )
-
-    elif app_mode == "ROI Calculator":
-        st.subheader("Infrastructure efficiency model")
-        st.caption(
-            "Illustrative annual savings from optimizing edge data pipelines — adjust assumptions."
-        )
-        c_left, c_right = st.columns([1, 1])
-        with c_left:
-            devices = st.number_input("Connected devices", min_value=1, value=10_000, step=500)
-            mb_per_day = st.slider("Avg. MB / device / day", 1, 500, 20)
-            cost_per_gb = st.number_input("Cloud egress $ / GB (blended)", value=0.12, format="%.4f")
-            months = st.slider("Months in model", 6, 36, 12)
-        with c_right:
-            reduction = st.slider("Efficiency gain vs. baseline (%)", 5, 60, 35)
-            st.markdown(
-                '<p class="section-label">Formula (illustrative)</p>'
-                "<p style='font-size:0.9rem;color:#5c6370;'>"
-                "Monthly GB ≈ devices × MB/day × 30 / 1024. Savings scale with "
-                "egress cost, volume, and realized efficiency.</p>",
-                unsafe_allow_html=True,
-            )
-
-        monthly_gb = (devices * mb_per_day * 30) / 1024
-        baseline_spend = monthly_gb * cost_per_gb * months
-        savings = baseline_spend * (reduction / 100.0)
-
+    with c2:
+        st.markdown('<p class="section-label">Strategic fit</p>', unsafe_allow_html=True)
         st.markdown(
-            f'<div class="roi-panel">'
-            f"<h3 style='margin:0 0 0.5rem 0;'>Modeled savings</h3>"
-            f"<p style='font-size:1.75rem;font-weight:700;margin:0;color:#0d47a1;'>${savings:,.0f}</p>"
-            f"<p style='margin:0.25rem 0 0 0;color:#5c6370;'>Over {months} months "
-            f"at {reduction}% efficiency vs. baseline cloud egress (~${baseline_spend:,.0f} total spend).</p>"
+            f'<div class="fit-ring">'
+            f'<div class="section-label" style="margin-bottom:0.5rem;">Account score</div>'
+            f'<div class="fit-score">{score}</div>'
+            f'<div class="tier-pill {tier_cls}">{tier_label}</div>'
+            f"<p style='font-size:0.85rem;color:#5c6370;margin-top:1rem;'>"
+            f"Heuristic from sector, scale, and volatility — tune for your ICP.</p>"
             f"</div>",
             unsafe_allow_html=True,
         )
 
-    elif app_mode == "Outreach & Export":
-        st.subheader("Outreach brief")
-        goal = st.selectbox(
-            "Objective",
-            [
-                "Executive intro email (150 words)",
-                "Follow-up after demo",
-                "Multi-threading to CFO",
-                "Meeting agenda bullets",
-            ],
+    with c3:
+        st.markdown('<p class="section-label">Snapshot</p>', unsafe_allow_html=True)
+        mc = _safe_float(info.get("marketCap"), 0)
+        emp = int(_safe_float(info.get("fullTimeEmployees"), 0))
+        web = (info.get("website") or "").strip() or "—"
+        emp_html = (
+            f"<p><strong>Employees</strong><br>{emp:,}</p>"
+            if emp
+            else "<p><strong>Employees</strong><br>—</p>"
         )
-        extra = st.text_area("Extra context (optional)", placeholder="Pain points, competitor mentions…")
-        if st.button("Generate draft", type="primary"):
-            if not GEMINI_API_KEY:
-                st.error("Configure GEMINI_API_KEY to generate copy.")
-            else:
-                prompt = f"""{goal} for account {name} ({ticker}), sector {sector}.
+        if web == "—":
+            web_html = "<p><strong>Website</strong><br>—</p>"
+        else:
+            href = web if web.startswith("http") else f"https://{web}"
+            web_html = (
+                f"<p><strong>Website</strong><br>"
+                f"<a href=\"{href}\" target=\"_blank\" rel=\"noopener noreferrer\">{web}</a></p>"
+            )
+        st.markdown(
+            f'<div class="metric-shell">'
+            f"<p><strong>Market cap</strong><br>{format_usd_compact(mc) if mc else '—'}</p>"
+            f"{emp_html}{web_html}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+elif app_mode == "Weekly News Digest":
+    st.subheader("Signal from the wire")
+    st.caption("Recent articles mentioning the company or ticker (NewsAPI).")
+    if not NEWS_API_KEY:
+        st.warning(
+            "Add `NEWS_API_KEY` to `.env` or secrets to load live headlines. "
+            "See https://newsapi.org/register"
+        )
+    df_news = fetch_company_news(name, ticker)
+    if df_news.empty and NEWS_API_KEY:
+        st.info("No articles returned — try a different ticker or check API quota.")
+    elif not df_news.empty:
+        st.dataframe(
+            df_news,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "URL": st.column_config.LinkColumn("Article"),
+                "Title": st.column_config.TextColumn("Headline", width="large"),
+            },
+        )
+
+elif app_mode == "Account Leaderboard":
+    st.subheader("Pipeline leaderboard")
+    st.caption("Demo data — replace with CRM export or connect your data source.")
+    edited = st.data_editor(
+        st.session_state.leaderboard_rows,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Est. ARR ($K)": st.column_config.NumberColumn(format="%d"),
+        },
+    )
+    st.session_state.leaderboard_rows = edited
+    csv_bytes = edited.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download CSV",
+        data=csv_bytes,
+        file_name=f"leaderboard_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv",
+    )
+
+elif app_mode == "ROI Calculator":
+    st.subheader("Infrastructure efficiency model")
+    st.caption(
+        "Illustrative annual savings from optimizing edge data pipelines — adjust assumptions."
+    )
+    c_left, c_right = st.columns([1, 1])
+    with c_left:
+        devices = st.number_input("Connected devices", min_value=1, value=10_000, step=500)
+        mb_per_day = st.slider("Avg. MB / device / day", 1, 500, 20)
+        cost_per_gb = st.number_input("Cloud egress $ / GB (blended)", value=0.12, format="%.4f")
+        months = st.slider("Months in model", 6, 36, 12)
+    with c_right:
+        reduction = st.slider("Efficiency gain vs. baseline (%)", 5, 60, 35)
+        st.markdown(
+            '<p class="section-label">Formula (illustrative)</p>'
+            "<p style='font-size:0.9rem;color:#5c6370;'>"
+            "Monthly GB ≈ devices × MB/day × 30 / 1024. Savings scale with "
+            "egress cost, volume, and realized efficiency.</p>",
+            unsafe_allow_html=True,
+        )
+
+    monthly_gb = (devices * mb_per_day * 30) / 1024
+    baseline_spend = monthly_gb * cost_per_gb * months
+    savings = baseline_spend * (reduction / 100.0)
+
+    st.markdown(
+        f'<div class="roi-panel">'
+        f"<h3 style='margin:0 0 0.5rem 0;'>Modeled savings</h3>"
+        f"<p style='font-size:1.75rem;font-weight:700;margin:0;color:#0d47a1;'>${savings:,.0f}</p>"
+        f"<p style='margin:0.25rem 0 0 0;color:#5c6370;'>Over {months} months "
+        f"at {reduction}% efficiency vs. baseline cloud egress (~${baseline_spend:,.0f} total spend).</p>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+elif app_mode == "Outreach & Export":
+    st.subheader("Outreach brief")
+    goal = st.selectbox(
+        "Objective",
+        [
+            "Executive intro email (150 words)",
+            "Follow-up after demo",
+            "Multi-threading to CFO",
+            "Meeting agenda bullets",
+        ],
+    )
+    extra = st.text_area("Extra context (optional)", placeholder="Pain points, competitor mentions…")
+    if st.button("Generate draft", type="primary"):
+        if not GEMINI_API_KEY:
+            st.error("Configure GEMINI_API_KEY to generate copy.")
+        else:
+            prompt = f"""{goal} for account {name} ({ticker}), sector {sector}.
 Target persona: {st.session_state.persona}.
 Extra notes: {extra or 'None'}.
 Output: ready-to-send email or bullets only, no preamble."""
-                ctx = concierge_system_prompt(
-                    name, ticker, st.session_state.persona, sector
-                )
-                draft = run_gemini_chat(prompt, ctx)
-                st.session_state["last_outreach_draft"] = draft
-        if st.session_state.get("last_outreach_draft"):
-            st.text_area("Draft", st.session_state["last_outreach_draft"], height=240)
-            st.download_button(
-                "Download .txt",
-                st.session_state["last_outreach_draft"].encode("utf-8"),
-                file_name=f"outreach_{ticker}_{datetime.now().strftime('%Y%m%d')}.txt",
+            ctx = concierge_system_prompt(
+                name, ticker, st.session_state.persona, sector
             )
+            draft = run_gemini_chat(prompt, ctx)
+            st.session_state["last_outreach_draft"] = draft
+    if st.session_state.get("last_outreach_draft"):
+        st.text_area("Draft", st.session_state["last_outreach_draft"], height=240)
+        st.download_button(
+            "Download .txt",
+            st.session_state["last_outreach_draft"].encode("utf-8"),
+            file_name=f"outreach_{ticker}_{datetime.now().strftime('%Y%m%d')}.txt",
+        )
 
-    # --- CONCIERGE (all modes) ---
-    st.divider()
-    st.subheader("Account concierge")
-    st.caption("Ask positioning questions; answers use Gemini with account context.")
+# --- CONCIERGE (all modes) ---
+st.divider()
+st.subheader("Account concierge")
+st.caption("Ask positioning questions; answers use Gemini with account context.")
 
-    chat_ctx = concierge_system_prompt(
-        name, ticker, st.session_state.persona, sector
-    )
+chat_ctx = concierge_system_prompt(
+    name, ticker, st.session_state.persona, sector
+)
 
-    for msg in st.session_state.chat_messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+for msg in st.session_state.chat_messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-    prompt = st.chat_input("Ask about this account…")
-    if prompt:
-        st.session_state.chat_messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            if not GEMINI_API_KEY:
-                reply = "Set `GEMINI_API_KEY` in your environment or Streamlit secrets."
-            else:
-                history_text = "\n".join(
-                    f'{m["role"]}: {m["content"]}'
-                    for m in st.session_state.chat_messages[-8:]
-                )
-                reply = run_gemini_chat(
-                    f"Conversation:\n{history_text}\n\nLatest user message: {prompt}",
-                    chat_ctx,
-                )
-            st.markdown(reply)
-        st.session_state.chat_messages.append({"role": "assistant", "content": reply})
-        st.rerun()
-
-except Exception as e:
-    st.error(f"Could not load market data for `{st.session_state.get('ticker', DEFAULT_TICKER)}`.")
-    st.caption(str(e))
+prompt = st.chat_input("Ask about this account…")
+if prompt:
+    st.session_state.chat_messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    with st.chat_message("assistant"):
+        if not GEMINI_API_KEY:
+            reply = "Set `GEMINI_API_KEY` in your environment or Streamlit secrets."
+        else:
+            history_text = "\n".join(
+                f'{m["role"]}: {m["content"]}'
+                for m in st.session_state.chat_messages[-8:]
+            )
+            reply = run_gemini_chat(
+                f"Conversation:\n{history_text}\n\nLatest user message: {prompt}",
+                chat_ctx,
+            )
+        st.markdown(reply)
+    st.session_state.chat_messages.append({"role": "assistant", "content": reply})
+    st.rerun()
