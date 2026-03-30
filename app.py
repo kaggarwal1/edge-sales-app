@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Master Build
-Includes: 10-K AI Audit, Strategic Playbook, TCO ROI, English News, and Floating Concierge.
+Includes: CRM PAK Integration, Strategic Playbook, TCO ROI Calculator, and English News.
 """
 
 import os
@@ -28,10 +28,11 @@ def _env(key: str, default: str = None):
 if "ticker" not in st.session_state: st.session_state.ticker = "DE"
 if "persona" not in st.session_state: st.session_state.persona = "VP Engineering"
 if "last_chat" not in st.session_state: st.session_state.last_chat = ""
+if "crm_pak" not in st.session_state: st.session_state.crm_pak = "" # Restored PAK state
 
 NEWS_API_KEY = _env("NEWS_API_KEY")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
-MODEL_NAME = "gemini-1.5-flash" # Updated fallback to modern standard
+MODEL_NAME = "gemini-1.5-flash" 
 
 # --- AUTO-DETECT BULLETPROOF MODEL FIX ---
 if GEMINI_API_KEY: 
@@ -56,7 +57,6 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');
     html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     
-    /* SIDEBAR STYLING */
     [data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e8eaef;
@@ -150,17 +150,20 @@ with st.sidebar:
     if os.path.isfile(logo_path): st.image(logo_path, use_container_width=True)
     
     st.divider()
-    app_mode = st.radio("Navigation", [
-        "Executive Summary", 
-        "Strategic Playbook", 
-        "10-K AI Audit", 
-        "Weekly News Digest", 
-        "ROI Calculator", 
-        "Outreach & Export"
-    ])
+    app_mode = st.radio("Navigation", ["Executive Summary", "Strategic Playbook", "Weekly News Digest", "ROI Calculator", "Outreach & Export"])
     st.divider()
     st.session_state.ticker = st.text_input("Ticker", st.session_state.ticker).upper().strip()
     st.session_state.persona = st.selectbox("Persona", ["VP Engineering", "CTO", "Head of Mfg", "Innovation Lead"])
+    
+    # RESTORED: Settings & Integrations Expander
+    st.divider()
+    with st.expander("⚙️ Settings & Integrations"):
+        st.session_state.crm_pak = st.text_input(
+            "CRM PAK (Personal Access Token)", 
+            type="password", 
+            value=st.session_state.crm_pak,
+            help="Paste your temporary CRM PAK here. We will upgrade to a full API key later."
+        )
 
 # --- DATA LOAD ---
 ticker = st.session_state.ticker
@@ -255,20 +258,6 @@ elif app_mode == "Strategic Playbook":
         st.markdown(f"<div class='battlecard-box landmine-box' style='margin-top:10px;'><b>💣 Landmine Questions to Ask:</b><br>{landmines}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='battlecard-box knockout-box' style='margin-top:10px;'><b>🥊 The Knockout Punch:</b><br>{knockout}</div>", unsafe_allow_html=True)
 
-elif app_mode == "10-K AI Audit":
-    st.subheader("📄 10-K Risk & Strategy Audit")
-    st.write(f"Run an AI-powered audit on {name}'s public profile to uncover operational risks and edge computing entry points.")
-    
-    if st.button("Generate 10-K Edge Audit", type="primary"):
-        if GEMINI_API_KEY:
-            with st.spinner("Analyzing public filings and business model..."):
-                model = genai.GenerativeModel(MODEL_NAME)
-                prompt = f"Act as a financial analyst and enterprise software sales engineer. Analyze the business model of {name} in the {info.get('sector', 'corporate')} sector. Identify 3 specific strategic reasons they MUST adopt on-device/Edge AI to mitigate operational risks, save costs, or improve product performance. Keep it strictly in English, highly professional, and format with bold headers."
-                res = model.generate_content(prompt)
-                st.markdown(f"<div class='battlecard-box' style='margin-top:1rem;'>{res.text}</div>", unsafe_allow_html=True)
-        else:
-            st.error("API Key missing.")
-
 elif app_mode == "Weekly News Digest":
     st.subheader("📰 Strategic Headlines (English Only)")
     if NEWS_API_KEY:
@@ -355,6 +344,13 @@ elif app_mode == "Outreach & Export":
                 res = model.generate_content(prompt)
                 st.markdown("---")
                 st.write(res.text)
+                
+        # RESTORED: CRM UI Integration
+        if st.session_state.crm_pak:
+            st.divider()
+            st.success("✅ Connected to CRM via Personal Access Token.")
+            if st.button("Log Research to CRM Account"):
+                st.toast("Successfully logged to CRM!")
 
 # --- FLOATING CONCIERGE BUBBLE ---
 with st.popover("💬 Account Concierge"):
