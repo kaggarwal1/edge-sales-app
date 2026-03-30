@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Stable Build
-Fixes: Universal Gemini Model (Pro), Sidebar Contrast, English-Only News.
+Fixes: Auto-Detects Available Gemini Model, Sidebar Contrast, English-Only News.
 """
 
 import os
@@ -23,9 +23,6 @@ def _env(key: str, default: str = None):
     except: pass
     return os.getenv(key, default)
 
-# THE FIX: Using the universal base model to prevent 404 errors
-MODEL_NAME = 'gemini-pro'
-
 # --- SESSION STATE ---
 if "ticker" not in st.session_state: st.session_state.ticker = "DE"
 if "persona" not in st.session_state: st.session_state.persona = "VP Engineering"
@@ -39,7 +36,25 @@ if "leaderboard_rows" not in st.session_state:
 
 NEWS_API_KEY = _env("NEWS_API_KEY")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
-if GEMINI_API_KEY: genai.configure(api_key=GEMINI_API_KEY)
+MODEL_NAME = "gemini-1.5-flash" # Fallback default
+
+# --- AUTO-DETECT BULLETPROOF MODEL FIX ---
+if GEMINI_API_KEY: 
+    genai.configure(api_key=GEMINI_API_KEY)
+    try:
+        # Ask Google what models your specific API key is allowed to use
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        gemini_models = [m for m in available_models if 'gemini' in m.lower()]
+        
+        if gemini_models:
+            MODEL_NAME = gemini_models[0] # Pick the first valid model
+            # Try to grab a "flash" model for speed if you have one
+            for m in gemini_models:
+                if 'flash' in m.lower():
+                    MODEL_NAME = m
+                    break
+    except Exception as e:
+        print(f"Model fetch error: {e}")
 
 # --- UI STYLING ---
 st.set_page_config(page_title="Sales Intelligence", layout="wide")
@@ -137,15 +152,18 @@ elif app_mode == "Weekly News Digest":
         with st.spinner("Searching English sources..."):
             domains = "reuters.com,bloomberg.com,techcrunch.com,wsj.com,cnbc.com"
             url = f"https://newsapi.org/v2/everything?q={name}&domains={domains}&language=en&sortBy=publishedAt&apiKey={NEWS_API_KEY}"
-            r = requests.get(url).json()
-            articles = r.get("articles", [])[:5]
-            if articles:
-                for a in articles:
-                    st.markdown(f"**[{a['title']}]({a['url']})**")
-                    st.caption(f"{a['source']['name']} · {a['publishedAt'][:10]}")
-                    st.write(a['description'] or "")
-                    st.divider()
-            else: st.info("No recent English news found.")
+            try:
+                r = requests.get(url).json()
+                articles = r.get("articles", [])[:5]
+                if articles:
+                    for a in articles:
+                        st.markdown(f"**[{a['title']}]({a['url']})**")
+                        st.caption(f"{a['source']['name']} · {a['publishedAt'][:10]}")
+                        st.write(a['description'] or "")
+                        st.divider()
+                else: st.info("No recent English news found.")
+            except:
+                st.error("Error connecting to News API.")
     else: st.error("NEWS_API_KEY missing.")
 
 elif app_mode == "Account Leaderboard":
@@ -168,11 +186,12 @@ elif app_mode == "Outreach & Export":
     if GEMINI_API_KEY:
         context = st.text_area("Custom Context", placeholder="e.g. They just opened a new plant in Texas.")
         if st.button("Generate Email"):
-            model = genai.GenerativeModel(MODEL_NAME)
-            prompt = f"In English only, write a short, professional sales email to a {st.session_state.persona} at {name} about Edge AI. Context: {context}"
-            res = model.generate_content(prompt)
-            st.markdown("---")
-            st.write(res.text)
+            with st.spinner(f"Writing draft using model: {MODEL_NAME}..."):
+                model = genai.GenerativeModel(MODEL_NAME)
+                prompt = f"In English only, write a short, professional sales email to a {st.session_state.persona} at {name} about Edge AI. Context: {context}"
+                res = model.generate_content(prompt)
+                st.markdown("---")
+                st.write(res.text)
 
 # --- CONCIERGE (Chat) ---
 if app_mode != "Account Leaderboard":
