@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Master Build
-Includes: Strategic Playbook (Battlecards + AI Use Cases), TCO ROI, English News, Concierge.
+Includes: Clean Sidebar Header, TCO ROI Calculator, URL-Encoded English News, Floating Concierge.
 """
 
 import os
@@ -27,11 +27,18 @@ def _env(key: str, default: str = None):
 # --- SESSION STATE ---
 if "ticker" not in st.session_state: st.session_state.ticker = "DE"
 if "persona" not in st.session_state: st.session_state.persona = "VP Engineering"
+if "leaderboard_rows" not in st.session_state:
+    st.session_state.leaderboard_rows = pd.DataFrame({
+        "Account": ["John Deere", "Siemens", "Bosch", "Schneider", "Honeywell"],
+        "Ticker": ["DE", "SIE.DE", "BOSCHLTD.NS", "SU.PA", "HON"],
+        "Stage": ["Negotiation", "Discovery", "Proposal", "Qualification", "Discovery"],
+        "Est. ARR ($K)": [420, 310, 180, 95, 240]
+    })
 if "last_chat" not in st.session_state: st.session_state.last_chat = ""
 
 NEWS_API_KEY = _env("NEWS_API_KEY")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
-MODEL_NAME = "gemini-pro" # Universal bulletproof model
+MODEL_NAME = "gemini-1.5-flash" # Updated fallback to modern standard
 
 # --- AUTO-DETECT BULLETPROOF MODEL FIX ---
 if GEMINI_API_KEY: 
@@ -56,11 +63,16 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');
     html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     
+    /* SIDEBAR STYLING - Adjusted padding to move header up */
     [data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e8eaef;
     }
     [data-testid="stSidebar"] * { color: #1a1d26 !important; }
+    [data-testid="stSidebarUserContent"] {
+        padding-top: 2rem !important; 
+    }
+    
     .stApp { background: #ffffff; }
     
     .fit-ring {
@@ -71,29 +83,26 @@ st.markdown("""
     h1 { margin-bottom: 0px !important; padding-bottom: 0px !important; }
     .header-subtext { color: #5c6370; margin-top: -5px; font-weight: 500; margin-bottom: 10px; }
     
-    /* BATTLECARD CSS */
-    .battlecard-box {
-        padding: 1.5rem; border-radius: 12px; height: 100%;
-        border: 1px solid #e8eaef;
-    }
-    .knockout-box {
-        background-color: #e8f5e9; border-left: 5px solid #1b5e20;
-    }
-    .landmine-box {
-        background-color: #fff3e0; border-left: 5px solid #e65100;
-    }
-    
     /* FLOATING CONCIERGE CSS */
     div[data-testid="stPopover"] {
-        position: fixed; bottom: 2rem; right: 2rem; z-index: 9999;
+        position: fixed;
+        bottom: 2rem;
+        right: 2rem;
+        z-index: 9999;
     }
     div[data-testid="stPopover"] > button {
-        background-color: #0d47a1; color: white; border-radius: 30px;
-        padding: 0.75rem 1.5rem; border: none; box-shadow: 0px 6px 16px rgba(0,0,0,0.2);
-        font-weight: bold; transition: all 0.2s ease-in-out;
+        background-color: #0d47a1;
+        color: white;
+        border-radius: 30px;
+        padding: 0.75rem 1.5rem;
+        border: none;
+        box-shadow: 0px 6px 16px rgba(0,0,0,0.2);
+        font-weight: bold;
+        transition: all 0.2s ease-in-out;
     }
     div[data-testid="stPopover"] > button:hover {
-        background-color: #002171; transform: translateY(-2px);
+        background-color: #002171;
+        transform: translateY(-2px);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -130,12 +139,13 @@ def get_fit_breakdown(info):
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.markdown("### 🏦 Sales Intelligence")
+    # CLEANER, HIGHER HEADER
+    st.markdown("<h2 style='margin-top:-10px; font-weight:700; font-size:1.4rem; letter-spacing:-0.5px;'><span style='color:#0d47a1;'>◆</span> Sales Intelligence</h2>", unsafe_allow_html=True)
+    
     logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
     if os.path.isfile(logo_path): st.image(logo_path, use_container_width=True)
     
     st.divider()
-    # Swapped Leaderboard for Strategic Playbook
     app_mode = st.radio("Navigation", ["Executive Summary", "Strategic Playbook", "Weekly News Digest", "ROI Calculator", "Outreach & Export"])
     st.divider()
     st.session_state.ticker = st.text_input("Ticker", st.session_state.ticker).upper().strip()
@@ -200,7 +210,6 @@ elif app_mode == "Strategic Playbook":
     
     with c1:
         st.markdown("**Market Landscape**")
-        # Build the Magic Quadrant
         df_comp = pd.DataFrame({
             "Competitor": ["Edge Impulse", "AWS SageMaker Edge", "STMicroelectronics", "DIY (TensorFlow Lite)"],
             "Hardware Agnosticism": [95, 30, 10, 90],
