@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Master Build
-Includes: TCO ROI Calculator, URL-Encoded English News, Floating Concierge, and Clean UI.
+Includes: Strategic Playbook (Battlecards + AI Use Cases), TCO ROI, English News, Concierge.
 """
 
 import os
@@ -27,13 +27,6 @@ def _env(key: str, default: str = None):
 # --- SESSION STATE ---
 if "ticker" not in st.session_state: st.session_state.ticker = "DE"
 if "persona" not in st.session_state: st.session_state.persona = "VP Engineering"
-if "leaderboard_rows" not in st.session_state:
-    st.session_state.leaderboard_rows = pd.DataFrame({
-        "Account": ["John Deere", "Siemens", "Bosch", "Schneider", "Honeywell"],
-        "Ticker": ["DE", "SIE.DE", "BOSCHLTD.NS", "SU.PA", "HON"],
-        "Stage": ["Negotiation", "Discovery", "Proposal", "Qualification", "Discovery"],
-        "Est. ARR ($K)": [420, 310, 180, 95, 240]
-    })
 if "last_chat" not in st.session_state: st.session_state.last_chat = ""
 
 NEWS_API_KEY = _env("NEWS_API_KEY")
@@ -78,26 +71,29 @@ st.markdown("""
     h1 { margin-bottom: 0px !important; padding-bottom: 0px !important; }
     .header-subtext { color: #5c6370; margin-top: -5px; font-weight: 500; margin-bottom: 10px; }
     
+    /* BATTLECARD CSS */
+    .battlecard-box {
+        padding: 1.5rem; border-radius: 12px; height: 100%;
+        border: 1px solid #e8eaef;
+    }
+    .knockout-box {
+        background-color: #e8f5e9; border-left: 5px solid #1b5e20;
+    }
+    .landmine-box {
+        background-color: #fff3e0; border-left: 5px solid #e65100;
+    }
+    
     /* FLOATING CONCIERGE CSS */
     div[data-testid="stPopover"] {
-        position: fixed;
-        bottom: 2rem;
-        right: 2rem;
-        z-index: 9999;
+        position: fixed; bottom: 2rem; right: 2rem; z-index: 9999;
     }
     div[data-testid="stPopover"] > button {
-        background-color: #0d47a1;
-        color: white;
-        border-radius: 30px;
-        padding: 0.75rem 1.5rem;
-        border: none;
-        box-shadow: 0px 6px 16px rgba(0,0,0,0.2);
-        font-weight: bold;
-        transition: all 0.2s ease-in-out;
+        background-color: #0d47a1; color: white; border-radius: 30px;
+        padding: 0.75rem 1.5rem; border: none; box-shadow: 0px 6px 16px rgba(0,0,0,0.2);
+        font-weight: bold; transition: all 0.2s ease-in-out;
     }
     div[data-testid="stPopover"] > button:hover {
-        background-color: #002171;
-        transform: translateY(-2px);
+        background-color: #002171; transform: translateY(-2px);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -139,7 +135,8 @@ with st.sidebar:
     if os.path.isfile(logo_path): st.image(logo_path, use_container_width=True)
     
     st.divider()
-    app_mode = st.radio("Navigation", ["Executive Summary", "Weekly News Digest", "Account Leaderboard", "ROI Calculator", "Outreach & Export"])
+    # Swapped Leaderboard for Strategic Playbook
+    app_mode = st.radio("Navigation", ["Executive Summary", "Strategic Playbook", "Weekly News Digest", "ROI Calculator", "Outreach & Export"])
     st.divider()
     st.session_state.ticker = st.text_input("Ticker", st.session_state.ticker).upper().strip()
     st.session_state.persona = st.selectbox("Persona", ["VP Engineering", "CTO", "Head of Mfg", "Innovation Lead"])
@@ -153,17 +150,16 @@ mc = info.get("marketCap", 0)
 mc_str = f"${mc/1e9:.2f}B" if mc > 0 else "N/A"
 
 # --- HEADER ---
-if app_mode in ["Executive Summary", "Weekly News Digest", "Outreach & Export"]:
-    col_t, col_m = st.columns([3, 1], vertical_alignment="bottom")
-    with col_t:
-        st.markdown(f'<h1>{name}</h1>', unsafe_allow_html=True)
-        st.markdown(f'<p class="header-subtext">{ticker} &nbsp;·&nbsp; {info.get("sector", "—")} &nbsp;·&nbsp; Market Cap: {mc_str}</p>', unsafe_allow_html=True)
-    with col_m:
-        price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
-        change = info.get("regularMarketChangePercent", 0)
-        color = "#1b5e20" if change >= 0 else "#dc3545"
-        st.markdown(f'<div style="text-align:right;"><h2 style="margin:0;">${price:,.2f}</h2><p style="color:{color}; margin:0; font-weight:700;">{change:+.2f}%</p></div>', unsafe_allow_html=True)
-    st.divider()
+col_t, col_m = st.columns([3, 1], vertical_alignment="bottom")
+with col_t:
+    st.markdown(f'<h1>{name}</h1>', unsafe_allow_html=True)
+    st.markdown(f'<p class="header-subtext">{ticker} &nbsp;·&nbsp; {info.get("sector", "—")} &nbsp;·&nbsp; Market Cap: {mc_str}</p>', unsafe_allow_html=True)
+with col_m:
+    price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
+    change = info.get("regularMarketChangePercent", 0)
+    color = "#1b5e20" if change >= 0 else "#dc3545"
+    st.markdown(f'<div style="text-align:right;"><h2 style="margin:0;">${price:,.2f}</h2><p style="color:{color}; margin:0; font-weight:700;">{change:+.2f}%</p></div>', unsafe_allow_html=True)
+st.divider()
 
 # --- TABS ---
 if app_mode == "Executive Summary":
@@ -183,6 +179,62 @@ if app_mode == "Executive Summary":
         st.markdown(f'<div class="fit-ring"><p class="header-subtext">STRATEGIC FIT</p><div class="fit-score">{score}</div><p style="color:{color}; font-weight:700;">{tier}</p></div>', unsafe_allow_html=True)
         st.dataframe(df_breakdown, hide_index=True, use_container_width=True)
 
+elif app_mode == "Strategic Playbook":
+    st.subheader("🎯 Account-Specific Edge AI Use Cases")
+    st.write(f"Generate targeted use-cases based on {name}'s public business profile.")
+    
+    if st.button("Generate Strategic Use Cases", type="primary"):
+        if GEMINI_API_KEY:
+            with st.spinner("Analyzing business model..."):
+                model = genai.GenerativeModel(MODEL_NAME)
+                prompt = f"Act as a pre-sales engineer. Based on {name}'s business model in the {info.get('sector', 'corporate')} sector, suggest 3 highly specific Edge AI use cases. Format as bullet points with bold titles. Keep it strictly focused on hardware, sensors, computer vision, or predictive maintenance. English only."
+                res = model.generate_content(prompt)
+                st.markdown(f"<div style='background:#f4f6fb; padding:1.5rem; border-radius:12px; margin-top:1rem;'>{res.text}</div>", unsafe_allow_html=True)
+        else:
+            st.error("API Key missing.")
+            
+    st.divider()
+    
+    st.subheader("⚔️ Competitive Intelligence Matrix")
+    c1, c2 = st.columns([1, 1])
+    
+    with c1:
+        st.markdown("**Market Landscape**")
+        # Build the Magic Quadrant
+        df_comp = pd.DataFrame({
+            "Competitor": ["Edge Impulse", "AWS SageMaker Edge", "STMicroelectronics", "DIY (TensorFlow Lite)"],
+            "Hardware Agnosticism": [95, 30, 10, 90],
+            "Developer Velocity": [90, 50, 70, 15],
+            "Color": ["#0d47a1", "#f57c00", "#1976d2", "#616161"]
+        })
+        fig = px.scatter(df_comp, x="Hardware Agnosticism", y="Developer Velocity", text="Competitor", size=[20,15,15,15], color="Color", color_discrete_map="identity")
+        fig.update_traces(textposition='top center', textfont=dict(size=12, color='#1a1d26'))
+        fig.add_hline(y=50, line_dash="dot", line_color="#bdbdbd")
+        fig.add_vline(x=50, line_dash="dot", line_color="#bdbdbd")
+        fig.update_layout(height=350, margin=dict(l=0,r=0,t=20,b=0), xaxis_range=[0,105], yaxis_range=[0,110], plot_bgcolor='rgba(0,0,0,0)', showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        st.markdown("**Battlecard Selector**")
+        comp = st.selectbox("Select Competitor to view Takedown:", ["AWS SageMaker Edge", "STMicroelectronics / Hardware Lock-in", "DIY / Open Source (TF Lite)"])
+        
+        if "AWS" in comp:
+            pitch = "End-to-end ML in the cloud, seamless integration with existing AWS billing and S3 lakes."
+            landmines = "• How much will egress fees cost to stream raw sensor data to AWS for training?\n• What happens when your remote device loses internet connectivity?"
+            knockout = "Edge Impulse runs completely offline on any silicon. Zero cloud-lock in, zero hidden data egress fees, and inference takes microseconds without a network round-trip."
+        elif "STMicro" in comp:
+            pitch = "Highly optimized anomaly detection that runs perfectly on STM32 chips."
+            landmines = "• What happens if supply chain issues force you to switch to NXP or TI chips next year?\n• Can it handle complex computer vision, or just basic vibration data?"
+            knockout = "Edge Impulse is 100% hardware agnostic. Write the model once and deploy it to ST, NXP, Arduino, or custom Linux gateways. Don't let software dictate your supply chain."
+        else:
+            pitch = "It's open-source and free. We have smart engineers who can build the pipeline from scratch."
+            landmines = "• How many months of engineering time will be spent building MLOps infrastructure instead of the core product?\n• How will you handle data versioning and drift monitoring across 10,000 devices?"
+            knockout = "DIY isn't free—it costs millions in engineering hours and delays time-to-market by 12+ months. Edge Impulse provides enterprise infrastructure out-of-the-box so engineers focus on the application, not the plumbing."
+            
+        st.markdown(f"<div class='battlecard-box'><b>Their Pitch:</b><br>{pitch}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='battlecard-box landmine-box' style='margin-top:10px;'><b>💣 Landmine Questions to Ask:</b><br>{landmines}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='battlecard-box knockout-box' style='margin-top:10px;'><b>🥊 The Knockout Punch:</b><br>{knockout}</div>", unsafe_allow_html=True)
+
 elif app_mode == "Weekly News Digest":
     st.subheader("📰 Strategic Headlines (English Only)")
     if NEWS_API_KEY:
@@ -198,10 +250,7 @@ elif app_mode == "Weekly News Digest":
             try:
                 r = requests.get(url, params=params).json()
                 articles = r.get("articles", [])
-                
-                # Filter out garbage [Removed] articles
                 valid_articles = [a for a in articles if a.get("title") and "[Removed]" not in a["title"]][:6]
-                
                 if valid_articles:
                     for a in valid_articles:
                         st.markdown(f"**[{a['title']}]({a['url']})**")
@@ -214,11 +263,6 @@ elif app_mode == "Weekly News Digest":
                 st.error(f"Error connecting to News API: {e}")
     else: 
         st.error("NEWS_API_KEY missing.")
-
-elif app_mode == "Account Leaderboard":
-    st.subheader("🏆 Portfolio Leaderboard")
-    edited = st.data_editor(st.session_state.leaderboard_rows, num_rows="dynamic", use_container_width=True, hide_index=True)
-    st.session_state.leaderboard_rows = edited
 
 elif app_mode == "ROI Calculator":
     st.subheader("💰 3-Year Total Cost of Ownership (TCO)")
