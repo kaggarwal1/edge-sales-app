@@ -1,6 +1,6 @@
 """
-Edge Impulse Sales Suite - Final Stable Build
-Fixes: Header Cleanup, Fit Score Table, and Floating Concierge Bubble.
+Edge Impulse Sales Suite - Final Master Build
+Includes: TCO ROI Calculator, URL-Encoded English News, Floating Concierge, and Clean UI.
 """
 
 import os
@@ -40,6 +40,7 @@ NEWS_API_KEY = _env("NEWS_API_KEY")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
 MODEL_NAME = "gemini-pro" # Universal bulletproof model
 
+# --- AUTO-DETECT BULLETPROOF MODEL FIX ---
 if GEMINI_API_KEY: 
     genai.configure(api_key=GEMINI_API_KEY)
     try:
@@ -156,13 +157,11 @@ if app_mode in ["Executive Summary", "Weekly News Digest", "Outreach & Export"]:
     col_t, col_m = st.columns([3, 1], vertical_alignment="bottom")
     with col_t:
         st.markdown(f'<h1>{name}</h1>', unsafe_allow_html=True)
-        # Market Cap added directly below the company name
         st.markdown(f'<p class="header-subtext">{ticker} &nbsp;·&nbsp; {info.get("sector", "—")} &nbsp;·&nbsp; Market Cap: {mc_str}</p>', unsafe_allow_html=True)
     with col_m:
         price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
         change = info.get("regularMarketChangePercent", 0)
         color = "#1b5e20" if change >= 0 else "#dc3545"
-        # Removed the box/top bar, clean floating text alignment
         st.markdown(f'<div style="text-align:right;"><h2 style="margin:0;">${price:,.2f}</h2><p style="color:{color}; margin:0; font-weight:700;">{change:+.2f}%</p></div>', unsafe_allow_html=True)
     st.divider()
 
@@ -182,28 +181,39 @@ if app_mode == "Executive Summary":
         color = "#1b5e20" if score >= 80 else "#e65100"
         
         st.markdown(f'<div class="fit-ring"><p class="header-subtext">STRATEGIC FIT</p><div class="fit-score">{score}</div><p style="color:{color}; font-weight:700;">{tier}</p></div>', unsafe_allow_html=True)
-        # The new transparent scoring table
         st.dataframe(df_breakdown, hide_index=True, use_container_width=True)
 
 elif app_mode == "Weekly News Digest":
     st.subheader("📰 Strategic Headlines (English Only)")
     if NEWS_API_KEY:
-        with st.spinner("Searching English sources..."):
-            domains = "reuters.com,bloomberg.com,techcrunch.com,wsj.com,cnbc.com"
-            url = f"https://newsapi.org/v2/everything?q={name}&domains={domains}&language=en&sortBy=publishedAt&apiKey={NEWS_API_KEY}"
+        with st.spinner("Searching top English sources..."):
+            url = "https://newsapi.org/v2/everything"
+            params = {
+                "q": f'"{name}" OR {ticker}',
+                "domains": "reuters.com,bloomberg.com,wsj.com,cnbc.com,finance.yahoo.com,forbes.com",
+                "language": "en",
+                "sortBy": "relevancy",
+                "apiKey": NEWS_API_KEY
+            }
             try:
-                r = requests.get(url).json()
-                articles = r.get("articles", [])[:5]
-                if articles:
-                    for a in articles:
+                r = requests.get(url, params=params).json()
+                articles = r.get("articles", [])
+                
+                # Filter out garbage [Removed] articles
+                valid_articles = [a for a in articles if a.get("title") and "[Removed]" not in a["title"]][:6]
+                
+                if valid_articles:
+                    for a in valid_articles:
                         st.markdown(f"**[{a['title']}]({a['url']})**")
                         st.caption(f"{a['source']['name']} · {a['publishedAt'][:10]}")
-                        st.write(a['description'] or "")
+                        st.write(a.get('description') or "")
                         st.divider()
-                else: st.info("No recent English news found.")
-            except:
-                st.error("Error connecting to News API.")
-    else: st.error("NEWS_API_KEY missing.")
+                else: 
+                    st.info("No recent strategic English news found. (Try adjusting the ticker).")
+            except Exception as e:
+                st.error(f"Error connecting to News API: {e}")
+    else: 
+        st.error("NEWS_API_KEY missing.")
 
 elif app_mode == "Account Leaderboard":
     st.subheader("🏆 Portfolio Leaderboard")
