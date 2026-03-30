@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Stable Build
-Fixes: Auto-Detects Gemini, Sidebar Contrast, English News, and TCO ROI Model.
+Fixes: Header Cleanup, Fit Score Table, and Floating Concierge Bubble.
 """
 
 import os
@@ -34,12 +34,12 @@ if "leaderboard_rows" not in st.session_state:
         "Stage": ["Negotiation", "Discovery", "Proposal", "Qualification", "Discovery"],
         "Est. ARR ($K)": [420, 310, 180, 95, 240]
     })
+if "last_chat" not in st.session_state: st.session_state.last_chat = ""
 
 NEWS_API_KEY = _env("NEWS_API_KEY")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
-MODEL_NAME = "gemini-1.5-flash" # Fallback default
+MODEL_NAME = "gemini-pro" # Universal bulletproof model
 
-# --- AUTO-DETECT BULLETPROOF MODEL FIX ---
 if GEMINI_API_KEY: 
     genai.configure(api_key=GEMINI_API_KEY)
     try:
@@ -68,18 +68,36 @@ st.markdown("""
     }
     [data-testid="stSidebar"] * { color: #1a1d26 !important; }
     .stApp { background: #ffffff; }
-    .metric-shell {
-        background: #ffffff; border: 1px solid #e8eaef;
-        border-radius: 12px; padding: 0.75rem 1rem;
-    }
+    
     .fit-ring {
         text-align: center; padding: 1.5rem; background: #f4f6fb;
-        border-radius: 16px; border: 1px solid #e8eaef;
+        border-radius: 16px 16px 0px 0px; border: 1px solid #e8eaef; border-bottom: none;
     }
     .fit-score { font-size: 3rem; font-weight: 700; color: #0d47a1; }
     h1 { margin-bottom: 0px !important; padding-bottom: 0px !important; }
     .header-subtext { color: #5c6370; margin-top: -5px; font-weight: 500; margin-bottom: 10px; }
-    [data-testid="stMetricLabel"] { display: none; }
+    
+    /* FLOATING CONCIERGE CSS */
+    div[data-testid="stPopover"] {
+        position: fixed;
+        bottom: 2rem;
+        right: 2rem;
+        z-index: 9999;
+    }
+    div[data-testid="stPopover"] > button {
+        background-color: #0d47a1;
+        color: white;
+        border-radius: 30px;
+        padding: 0.75rem 1.5rem;
+        border: none;
+        box-shadow: 0px 6px 16px rgba(0,0,0,0.2);
+        font-weight: bold;
+        transition: all 0.2s ease-in-out;
+    }
+    div[data-testid="stPopover"] > button:hover {
+        background-color: #002171;
+        transform: translateY(-2px);
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -90,6 +108,28 @@ def get_data(ticker):
         t = yf.Ticker(ticker)
         return t.info, t.history(period="1y")
     except: return {}, pd.DataFrame()
+
+def get_fit_breakdown(info):
+    score = 60
+    breakdown = [{"Criteria": "Base Qualification", "Points": "+60"}]
+    
+    sector = info.get("sector", "")
+    if sector in ["Technology", "Industrials"]:
+        score += 15
+        breakdown.append({"Criteria": f"High-Value Sector ({sector})", "Points": "+15"})
+    elif sector != "":
+        score += 5
+        breakdown.append({"Criteria": f"Sector ({sector})", "Points": "+5"})
+        
+    mc = info.get("marketCap", 0)
+    if mc > 100e9:
+        score += 13
+        breakdown.append({"Criteria": "Enterprise Scale (>100B)", "Points": "+13"})
+    elif mc > 10e9:
+        score += 8
+        breakdown.append({"Criteria": "Large Cap Scale (>10B)", "Points": "+8"})
+        
+    return min(score, 98), pd.DataFrame(breakdown)
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -108,18 +148,22 @@ ticker = st.session_state.ticker
 info, hist = get_data(ticker)
 name = info.get("shortName") or info.get("longName") or ticker
 
+mc = info.get("marketCap", 0)
+mc_str = f"${mc/1e9:.2f}B" if mc > 0 else "N/A"
+
 # --- HEADER ---
 if app_mode in ["Executive Summary", "Weekly News Digest", "Outreach & Export"]:
     col_t, col_m = st.columns([3, 1], vertical_alignment="bottom")
     with col_t:
         st.markdown(f'<h1>{name}</h1>', unsafe_allow_html=True)
-        st.markdown(f'<p class="header-subtext">{ticker} &nbsp;·&nbsp; {info.get("sector", "—")} &nbsp;·&nbsp; {info.get("industry", "—")}</p>', unsafe_allow_html=True)
+        # Market Cap added directly below the company name
+        st.markdown(f'<p class="header-subtext">{ticker} &nbsp;·&nbsp; {info.get("sector", "—")} &nbsp;·&nbsp; Market Cap: {mc_str}</p>', unsafe_allow_html=True)
     with col_m:
-        st.markdown('<div class="metric-shell">', unsafe_allow_html=True)
         price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
         change = info.get("regularMarketChangePercent", 0)
-        st.metric("", f"${price:,.2f}", f"{change:+.2f}%")
-        st.markdown('</div>', unsafe_allow_html=True)
+        color = "#1b5e20" if change >= 0 else "#dc3545"
+        # Removed the box/top bar, clean floating text alignment
+        st.markdown(f'<div style="text-align:right;"><h2 style="margin:0;">${price:,.2f}</h2><p style="color:{color}; margin:0; font-weight:700;">{change:+.2f}%</p></div>', unsafe_allow_html=True)
     st.divider()
 
 # --- TABS ---
@@ -133,8 +177,13 @@ if app_mode == "Executive Summary":
             fig.update_layout(height=280, margin=dict(l=0,r=0,t=0,b=0), xaxis_showgrid=False, plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
     with c2:
-        score = 88 if info.get("sector") in ["Technology", "Industrials"] else 60
-        st.markdown(f'<div class="fit-ring"><p class="header-subtext">STRATEGIC FIT</p><div class="fit-score">{score}</div><p style="color:#1b5e20; font-weight:700;">TIER A</p></div>', unsafe_allow_html=True)
+        score, df_breakdown = get_fit_breakdown(info)
+        tier = "TIER A" if score >= 80 else "TIER B"
+        color = "#1b5e20" if score >= 80 else "#e65100"
+        
+        st.markdown(f'<div class="fit-ring"><p class="header-subtext">STRATEGIC FIT</p><div class="fit-score">{score}</div><p style="color:{color}; font-weight:700;">{tier}</p></div>', unsafe_allow_html=True)
+        # The new transparent scoring table
+        st.dataframe(df_breakdown, hide_index=True, use_container_width=True)
 
 elif app_mode == "Weekly News Digest":
     st.subheader("📰 Strategic Headlines (English Only)")
@@ -163,8 +212,6 @@ elif app_mode == "Account Leaderboard":
 
 elif app_mode == "ROI Calculator":
     st.subheader("💰 3-Year Total Cost of Ownership (TCO)")
-    
-    # Inputs
     c1, c2, c3 = st.columns(3)
     with c1:
         devs = st.number_input("Fleet Size (Devices)", min_value=1000, value=25000, step=1000)
@@ -175,13 +222,11 @@ elif app_mode == "ROI Calculator":
     with c3:
         edge_license = st.number_input("Edge Impulse SaaS Fee ($/Yr)", value=75000, step=5000)
 
-    # Core Math
     annual_gb = (devs * mb * 365) / 1024
     annual_cloud_cost = annual_gb * cloud_cost
     annual_edge_cloud_cost = annual_cloud_cost * (1 - (data_reduction / 100))
     annual_edge_total = edge_license + annual_edge_cloud_cost
 
-    # Plotly Forecast Data
     years = [1, 2, 3]
     cloud_cum = [annual_cloud_cost * y for y in years]
     edge_cum = [annual_edge_total * y for y in years]
@@ -192,12 +237,9 @@ elif app_mode == "ROI Calculator":
         "Architecture": ["Big Cloud (Status Quo)"]*3 + ["Edge Impulse"]*3
     })
 
-    fig = px.line(df_roi, x="Year", y="Cumulative Cost ($)", color="Architecture", 
-                  color_discrete_map={"Big Cloud (Status Quo)": "#dc3545", "Edge Impulse": "#1b5e20"},
-                  markers=True)
+    fig = px.line(df_roi, x="Year", y="Cumulative Cost ($)", color="Architecture", color_discrete_map={"Big Cloud (Status Quo)": "#dc3545", "Edge Impulse": "#1b5e20"}, markers=True)
     fig.update_layout(height=350, margin=dict(l=0,r=0,t=30,b=0), xaxis_title="", plot_bgcolor='rgba(0,0,0,0)')
     
-    # Visualization Layout
     col_chart, col_metrics = st.columns([2, 1])
     with col_chart:
         st.plotly_chart(fig, use_container_width=True)
@@ -211,7 +253,6 @@ elif app_mode == "ROI Calculator":
             <div style="padding:1rem; border:1px solid #e8eaef; border-radius:12px;">
                 <p style="margin:0; font-size:0.9rem;"><b>Annual Cloud Bill:</b> ${annual_cloud_cost:,.0f}</p>
                 <p style="margin:0; font-size:0.9rem;"><b>Annual Edge Bill:</b> ${annual_edge_total:,.0f}</p>
-                <p style="margin:0; font-size:0.8rem; color:#5c6370;">*(Includes ${edge_license:,} SaaS fee)*</p>
             </div>
         ''', unsafe_allow_html=True)
 
@@ -227,14 +268,19 @@ elif app_mode == "Outreach & Export":
                 st.markdown("---")
                 st.write(res.text)
 
-# --- CONCIERGE (Chat) ---
-if app_mode != "Account Leaderboard":
-    st.divider()
-    st.subheader("💬 Account Concierge")
-    q = st.chat_input("Ask a question (English only)...")
-    if q:
-        with st.chat_message("user"): st.markdown(q)
-        if GEMINI_API_KEY:
-            model = genai.GenerativeModel(MODEL_NAME)
-            res = model.generate_content(f"Respond in English only. Context: {name}. Question: {q}")
-            with st.chat_message("assistant"): st.markdown(res.text)
+# --- FLOATING CONCIERGE BUBBLE ---
+with st.popover("💬 Account Concierge"):
+    st.markdown(f"**Ask AI about {name}**")
+    q = st.text_input("Message...", key="concierge_q")
+    if st.button("Send", use_container_width=True):
+        if GEMINI_API_KEY and q:
+            with st.spinner("Analyzing..."):
+                model = genai.GenerativeModel(MODEL_NAME)
+                res = model.generate_content(f"Respond in English only. Act as an enterprise AE strategist for {name}. Question: {q}")
+                st.session_state.last_chat = res.text
+        else:
+            st.error("Please enter a question or check your API key.")
+            
+    if st.session_state.last_chat:
+        st.markdown("---")
+        st.markdown(st.session_state.last_chat)
