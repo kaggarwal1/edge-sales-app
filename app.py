@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Master Build
-Includes: Clean Sidebar Header, TCO ROI Calculator, URL-Encoded English News, Floating Concierge.
+Includes: 10-K AI Audit, Strategic Playbook, TCO ROI, English News, and Floating Concierge.
 """
 
 import os
@@ -27,13 +27,6 @@ def _env(key: str, default: str = None):
 # --- SESSION STATE ---
 if "ticker" not in st.session_state: st.session_state.ticker = "DE"
 if "persona" not in st.session_state: st.session_state.persona = "VP Engineering"
-if "leaderboard_rows" not in st.session_state:
-    st.session_state.leaderboard_rows = pd.DataFrame({
-        "Account": ["John Deere", "Siemens", "Bosch", "Schneider", "Honeywell"],
-        "Ticker": ["DE", "SIE.DE", "BOSCHLTD.NS", "SU.PA", "HON"],
-        "Stage": ["Negotiation", "Discovery", "Proposal", "Qualification", "Discovery"],
-        "Est. ARR ($K)": [420, 310, 180, 95, 240]
-    })
 if "last_chat" not in st.session_state: st.session_state.last_chat = ""
 
 NEWS_API_KEY = _env("NEWS_API_KEY")
@@ -63,7 +56,7 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');
     html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     
-    /* SIDEBAR STYLING - Adjusted padding to move header up */
+    /* SIDEBAR STYLING */
     [data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e8eaef;
@@ -82,6 +75,18 @@ st.markdown("""
     .fit-score { font-size: 3rem; font-weight: 700; color: #0d47a1; }
     h1 { margin-bottom: 0px !important; padding-bottom: 0px !important; }
     .header-subtext { color: #5c6370; margin-top: -5px; font-weight: 500; margin-bottom: 10px; }
+    
+    /* BATTLECARD CSS */
+    .battlecard-box {
+        padding: 1.5rem; border-radius: 12px; height: 100%;
+        border: 1px solid #e8eaef;
+    }
+    .knockout-box {
+        background-color: #e8f5e9; border-left: 5px solid #1b5e20;
+    }
+    .landmine-box {
+        background-color: #fff3e0; border-left: 5px solid #e65100;
+    }
     
     /* FLOATING CONCIERGE CSS */
     div[data-testid="stPopover"] {
@@ -139,14 +144,20 @@ def get_fit_breakdown(info):
 
 # --- SIDEBAR ---
 with st.sidebar:
-    # CLEANER, HIGHER HEADER
     st.markdown("<h2 style='margin-top:-10px; font-weight:700; font-size:1.4rem; letter-spacing:-0.5px;'><span style='color:#0d47a1;'>◆</span> Sales Intelligence</h2>", unsafe_allow_html=True)
     
     logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
     if os.path.isfile(logo_path): st.image(logo_path, use_container_width=True)
     
     st.divider()
-    app_mode = st.radio("Navigation", ["Executive Summary", "Strategic Playbook", "Weekly News Digest", "ROI Calculator", "Outreach & Export"])
+    app_mode = st.radio("Navigation", [
+        "Executive Summary", 
+        "Strategic Playbook", 
+        "10-K AI Audit", 
+        "Weekly News Digest", 
+        "ROI Calculator", 
+        "Outreach & Export"
+    ])
     st.divider()
     st.session_state.ticker = st.text_input("Ticker", st.session_state.ticker).upper().strip()
     st.session_state.persona = st.selectbox("Persona", ["VP Engineering", "CTO", "Head of Mfg", "Innovation Lead"])
@@ -243,6 +254,20 @@ elif app_mode == "Strategic Playbook":
         st.markdown(f"<div class='battlecard-box'><b>Their Pitch:</b><br>{pitch}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='battlecard-box landmine-box' style='margin-top:10px;'><b>💣 Landmine Questions to Ask:</b><br>{landmines}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='battlecard-box knockout-box' style='margin-top:10px;'><b>🥊 The Knockout Punch:</b><br>{knockout}</div>", unsafe_allow_html=True)
+
+elif app_mode == "10-K AI Audit":
+    st.subheader("📄 10-K Risk & Strategy Audit")
+    st.write(f"Run an AI-powered audit on {name}'s public profile to uncover operational risks and edge computing entry points.")
+    
+    if st.button("Generate 10-K Edge Audit", type="primary"):
+        if GEMINI_API_KEY:
+            with st.spinner("Analyzing public filings and business model..."):
+                model = genai.GenerativeModel(MODEL_NAME)
+                prompt = f"Act as a financial analyst and enterprise software sales engineer. Analyze the business model of {name} in the {info.get('sector', 'corporate')} sector. Identify 3 specific strategic reasons they MUST adopt on-device/Edge AI to mitigate operational risks, save costs, or improve product performance. Keep it strictly in English, highly professional, and format with bold headers."
+                res = model.generate_content(prompt)
+                st.markdown(f"<div class='battlecard-box' style='margin-top:1rem;'>{res.text}</div>", unsafe_allow_html=True)
+        else:
+            st.error("API Key missing.")
 
 elif app_mode == "Weekly News Digest":
     st.subheader("📰 Strategic Headlines (English Only)")
