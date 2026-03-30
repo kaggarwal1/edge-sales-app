@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Stable Build
-Fixes: Auto-Detects Available Gemini Model, Sidebar Contrast, English-Only News.
+Fixes: Auto-Detects Gemini, Sidebar Contrast, English News, and TCO ROI Model.
 """
 
 import os
@@ -12,6 +12,7 @@ import google.generativeai as genai
 from datetime import datetime
 from dotenv import load_dotenv
 import plotly.graph_objects as go
+import plotly.express as px
 
 # --- CONFIG ---
 load_dotenv()
@@ -42,13 +43,10 @@ MODEL_NAME = "gemini-1.5-flash" # Fallback default
 if GEMINI_API_KEY: 
     genai.configure(api_key=GEMINI_API_KEY)
     try:
-        # Ask Google what models your specific API key is allowed to use
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         gemini_models = [m for m in available_models if 'gemini' in m.lower()]
-        
         if gemini_models:
-            MODEL_NAME = gemini_models[0] # Pick the first valid model
-            # Try to grab a "flash" model for speed if you have one
+            MODEL_NAME = gemini_models[0]
             for m in gemini_models:
                 if 'flash' in m.lower():
                     MODEL_NAME = m
@@ -64,14 +62,11 @@ st.markdown("""
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');
     html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     
-    /* SIDEBAR: White background, Black text */
     [data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e8eaef;
     }
     [data-testid="stSidebar"] * { color: #1a1d26 !important; }
-
-    /* MAIN UI */
     .stApp { background: #ffffff; }
     .metric-shell {
         background: #ffffff; border: 1px solid #e8eaef;
@@ -82,12 +77,8 @@ st.markdown("""
         border-radius: 16px; border: 1px solid #e8eaef;
     }
     .fit-score { font-size: 3rem; font-weight: 700; color: #0d47a1; }
-    
-    /* HEADER TIGHTENING */
     h1 { margin-bottom: 0px !important; padding-bottom: 0px !important; }
     .header-subtext { color: #5c6370; margin-top: -5px; font-weight: 500; margin-bottom: 10px; }
-    
-    /* REMOVE METRIC LABEL BOX */
     [data-testid="stMetricLabel"] { display: none; }
     </style>
     """, unsafe_allow_html=True)
@@ -108,7 +99,6 @@ with st.sidebar:
     
     st.divider()
     app_mode = st.radio("Navigation", ["Executive Summary", "Weekly News Digest", "Account Leaderboard", "ROI Calculator", "Outreach & Export"])
-    
     st.divider()
     st.session_state.ticker = st.text_input("Ticker", st.session_state.ticker).upper().strip()
     st.session_state.persona = st.selectbox("Persona", ["VP Engineering", "CTO", "Head of Mfg", "Innovation Lead"])
@@ -118,7 +108,7 @@ ticker = st.session_state.ticker
 info, hist = get_data(ticker)
 name = info.get("shortName") or info.get("longName") or ticker
 
-# --- HEADER (Visible in Summary, News, Outreach) ---
+# --- HEADER ---
 if app_mode in ["Executive Summary", "Weekly News Digest", "Outreach & Export"]:
     col_t, col_m = st.columns([3, 1], vertical_alignment="bottom")
     with col_t:
@@ -172,14 +162,58 @@ elif app_mode == "Account Leaderboard":
     st.session_state.leaderboard_rows = edited
 
 elif app_mode == "ROI Calculator":
-    st.subheader("💰 Efficiency Model")
-    c1, c2 = st.columns(2)
-    devs = c1.number_input("Devices", value=10000)
-    mb = c1.slider("MB/Day", 1, 500, 20)
-    cost = c2.number_input("Cloud $/GB", value=0.12)
-    gain = c2.slider("Efficiency %", 10, 90, 35)
-    savings = ((devs * mb * 365) / 1024) * cost * (gain/100)
-    st.markdown(f'<div class="fit-ring"><h3>Annual Savings: ${savings:,.0f}</h3></div>', unsafe_allow_html=True)
+    st.subheader("💰 3-Year Total Cost of Ownership (TCO)")
+    
+    # Inputs
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        devs = st.number_input("Fleet Size (Devices)", min_value=1000, value=25000, step=1000)
+        mb = st.slider("Data/Device/Day (MB)", 1, 500, 50)
+    with c2:
+        cloud_cost = st.number_input("Cloud Compute + Storage ($/GB)", value=0.15, format="%.2f")
+        data_reduction = st.slider("Edge Data Reduction %", 50, 99, 95)
+    with c3:
+        edge_license = st.number_input("Edge Impulse SaaS Fee ($/Yr)", value=75000, step=5000)
+
+    # Core Math
+    annual_gb = (devs * mb * 365) / 1024
+    annual_cloud_cost = annual_gb * cloud_cost
+    annual_edge_cloud_cost = annual_cloud_cost * (1 - (data_reduction / 100))
+    annual_edge_total = edge_license + annual_edge_cloud_cost
+
+    # Plotly Forecast Data
+    years = [1, 2, 3]
+    cloud_cum = [annual_cloud_cost * y for y in years]
+    edge_cum = [annual_edge_total * y for y in years]
+    
+    df_roi = pd.DataFrame({
+        "Year": ["Year 1", "Year 2", "Year 3", "Year 1", "Year 2", "Year 3"],
+        "Cumulative Cost ($)": cloud_cum + edge_cum,
+        "Architecture": ["Big Cloud (Status Quo)"]*3 + ["Edge Impulse"]*3
+    })
+
+    fig = px.line(df_roi, x="Year", y="Cumulative Cost ($)", color="Architecture", 
+                  color_discrete_map={"Big Cloud (Status Quo)": "#dc3545", "Edge Impulse": "#1b5e20"},
+                  markers=True)
+    fig.update_layout(height=350, margin=dict(l=0,r=0,t=30,b=0), xaxis_title="", plot_bgcolor='rgba(0,0,0,0)')
+    
+    # Visualization Layout
+    col_chart, col_metrics = st.columns([2, 1])
+    with col_chart:
+        st.plotly_chart(fig, use_container_width=True)
+    with col_metrics:
+        savings_y3 = cloud_cum[2] - edge_cum[2]
+        st.markdown(f'''
+            <div style="background:#f0f4fa; padding:1.5rem; border-radius:12px; border-left:5px solid #0d47a1; margin-bottom: 1rem;">
+                <p style="color:#5c6370; font-size:0.8rem; font-weight:700; margin:0;">YEAR 3 CUMULATIVE SAVINGS</p>
+                <h2 style="color:#1b5e20; margin:0;">${savings_y3:,.0f}</h2>
+            </div>
+            <div style="padding:1rem; border:1px solid #e8eaef; border-radius:12px;">
+                <p style="margin:0; font-size:0.9rem;"><b>Annual Cloud Bill:</b> ${annual_cloud_cost:,.0f}</p>
+                <p style="margin:0; font-size:0.9rem;"><b>Annual Edge Bill:</b> ${annual_edge_total:,.0f}</p>
+                <p style="margin:0; font-size:0.8rem; color:#5c6370;">*(Includes ${edge_license:,} SaaS fee)*</p>
+            </div>
+        ''', unsafe_allow_html=True)
 
 elif app_mode == "Outreach & Export":
     st.subheader("✍️ AI Outreach")
