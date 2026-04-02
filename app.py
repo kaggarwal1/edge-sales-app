@@ -1,9 +1,10 @@
 """
 Edge Impulse Sales Suite - Final Master Build
-Includes: Explorium API Integration (Fixed 404), 10-K Audit, CRM PAK, Strategic Playbook, TCO ROI.
+Includes: Gemini LLM Private Data, 10-K Audit, CRM PAK, Strategic Playbook, TCO ROI.
 """
 
 import os
+import json
 import requests
 import pandas as pd
 import streamlit as st
@@ -27,14 +28,13 @@ def _env(key: str, default: str = None):
 # --- SESSION STATE ---
 if "company_type" not in st.session_state: st.session_state.company_type = "Public (Yahoo)"
 if "ticker" not in st.session_state: st.session_state.ticker = "DE"
-if "private_name" not in st.session_state: st.session_state.private_name = "Stripe"
+if "private_name" not in st.session_state: st.session_state.private_name = "Anthropic"
 if "persona" not in st.session_state: st.session_state.persona = "VP Engineering"
 if "last_chat" not in st.session_state: st.session_state.last_chat = ""
 if "crm_pak" not in st.session_state: st.session_state.crm_pak = ""
 
 NEWS_API_KEY = _env("NEWS_API_KEY")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
-PRIVATE_DB_API_KEY = _env("PRIVATE_DB_API_KEY", "241575b3-1b29-45ee-b196-37ce4545321e") 
 MODEL_NAME = "gemini-1.5-flash" 
 
 # --- AUTO-DETECT BULLETPROOF MODEL FIX ---
@@ -111,50 +111,43 @@ def get_public_data(ticker):
 @st.cache_data(ttl=900)
 def get_private_data(company_name):
     """
-    Explorium API Integration for Firmographics
+    Gemini LLM Integration for Private Company Firmographics
     """
-    if not PRIVATE_DB_API_KEY:
-        return _mock_private(company_name, "Missing Explorium API Key")
+    if not GEMINI_API_KEY:
+        return _mock_private(company_name, "Missing Gemini API Key")
         
-    url = "https://api.explorium.ai/v1/businesses"
-    headers = {
-        "Authorization": f"Bearer {PRIVATE_DB_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "filters": {
-            "company_name": {
-                "values": [company_name]
-            }
-        }
-    }
-    
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            # Safely grab the first result regardless of how Explorium keys their arrays
-            results = data.get("data") or data.get("businesses") or data.get("results") or [{}]
-            company_data = results[0] if results else {}
-            
-            return {
-                "shortName": company_data.get("company_name", company_data.get("name", company_name.title())),
-                "sector": company_data.get("industry_category", "Private Sector"),
-                "industry": company_data.get("industry", "Private Enterprise"),
-                "longBusinessSummary": company_data.get("description", f"Live data retrieved from Explorium. {company_name} is a privately held enterprise."),
-                "marketCap": 0
-            }
-        else:
-            return _mock_private(company_name, f"API Error {r.status_code}: Check Endpoint/Auth")
+        model = genai.GenerativeModel(MODEL_NAME)
+        prompt = f"""
+        Act as a corporate firmographics database. Provide details for the private company: '{company_name}'.
+        Respond ONLY with a valid JSON object (no markdown formatting, no code blocks) containing exactly these keys:
+        "shortName": The official company name.
+        "sector": The broad sector (e.g., Technology, Healthcare, Manufacturing).
+        "industry": The specific industry (e.g., Artificial Intelligence, Medical Devices).
+        "longBusinessSummary": A 2-3 sentence summary of what the company does and its core business model.
+        """
+        res = model.generate_content(prompt)
+        
+        # Strip markdown if the LLM accidentally includes it
+        raw_json = res.text.strip().replace("```json", "").replace("```", "").strip()
+        data = json.loads(raw_json)
+        
+        return {
+            "shortName": data.get("shortName", company_name.title()),
+            "sector": data.get("sector", "Private Sector"),
+            "industry": data.get("industry", "Enterprise"),
+            "longBusinessSummary": data.get("longBusinessSummary", f"{company_name.title()} is a privately held organization."),
+            "marketCap": 0
+        }
     except Exception as e:
-        return _mock_private(company_name, str(e))
+        return _mock_private(company_name, f"Gemini API Error: {str(e)}")
 
 def _mock_private(company_name, err_msg):
     return {
         "shortName": company_name.title(),
         "sector": "Private Sector",
         "industry": "Enterprise",
-        "longBusinessSummary": f"Explorium API Call Status: [{err_msg}]. \n\n{company_name.title()} is a privately held organization.",
+        "longBusinessSummary": f"Data Retrieval Status: [{err_msg}]. \n\n{company_name.title()} is a privately held organization.",
         "marketCap": 0
     }
 
@@ -194,7 +187,7 @@ with st.sidebar:
     st.divider()
     
     st.markdown("**🔍 Target Account**")
-    st.session_state.company_type = st.radio("Database", ["Public (Yahoo)", "Private (Explorium)"], horizontal=True, label_visibility="collapsed")
+    st.session_state.company_type = st.radio("Database", ["Public (Yahoo)", "Private (Gemini AI)"], horizontal=True, label_visibility="collapsed")
     
     if "Public" in st.session_state.company_type:
         st.session_state.ticker = st.text_input("Public Ticker", st.session_state.ticker).upper().strip()
@@ -221,7 +214,6 @@ with st.sidebar:
             value=st.session_state.crm_pak,
             help="Paste your temporary CRM PAK here."
         )
-        st.caption("✅ Explorium API Connected")
 
 # --- DATA ROUTING ---
 is_public = "Public" in st.session_state.company_type
@@ -249,7 +241,7 @@ with col_m:
         color = "#1b5e20" if change >= 0 else "#dc3545"
         st.markdown(f'<div style="text-align:right;"><h2 style="margin:0;">${price:,.2f}</h2><p style="color:{color}; margin:0; font-weight:700;">{change:+.2f}%</p></div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div style="text-align:right;"><h2 style="margin:0; color:#5c6370;">Not Listed</h2><p style="color:#5c6370; margin:0; font-weight:700;">Explorium Data</p></div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:right;"><h2 style="margin:0; color:#5c6370;">Not Listed</h2><p style="color:#5c6370; margin:0; font-weight:700;">AI Firmographics</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- TABS ---
@@ -272,7 +264,7 @@ if app_mode == "Executive Summary":
 
 elif app_mode == "Strategic Playbook":
     st.subheader("🎯 Account-Specific Edge AI Use Cases")
-    st.write(f"Generate targeted use-cases based on {name}'s public business profile.")
+    st.write(f"Generate targeted use-cases based on {name}'s profile.")
     
     if st.button("Generate Strategic Use Cases", type="primary"):
         if GEMINI_API_KEY:
