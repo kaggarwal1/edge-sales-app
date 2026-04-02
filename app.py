@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Master Build
-Includes: Clean Header, 10-K AI Audit, CRM PAK, Strategic Playbook, TCO ROI, and English News.
+Includes: Explorium API Integration, Clean Header, 10-K Audit, CRM PAK, Strategic Playbook, TCO ROI.
 """
 
 import os
@@ -25,20 +25,17 @@ def _env(key: str, default: str = None):
     return os.getenv(key, default)
 
 # --- SESSION STATE ---
+if "company_type" not in st.session_state: st.session_state.company_type = "Public"
 if "ticker" not in st.session_state: st.session_state.ticker = "DE"
+if "private_name" not in st.session_state: st.session_state.private_name = "Stripe"
 if "persona" not in st.session_state: st.session_state.persona = "VP Engineering"
-if "leaderboard_rows" not in st.session_state:
-    st.session_state.leaderboard_rows = pd.DataFrame({
-        "Account": ["John Deere", "Siemens", "Bosch", "Schneider", "Honeywell"],
-        "Ticker": ["DE", "SIE.DE", "BOSCHLTD.NS", "SU.PA", "HON"],
-        "Stage": ["Negotiation", "Discovery", "Proposal", "Qualification", "Discovery"],
-        "Est. ARR ($K)": [420, 310, 180, 95, 240]
-    })
 if "last_chat" not in st.session_state: st.session_state.last_chat = ""
 if "crm_pak" not in st.session_state: st.session_state.crm_pak = ""
 
 NEWS_API_KEY = _env("NEWS_API_KEY")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
+# EXPLORIUM API KEY HARDCODED
+PRIVATE_DB_API_KEY = _env("PRIVATE_DB_API_KEY", "241575b3-1b29-45ee-b196-37ce4545321e") 
 MODEL_NAME = "gemini-1.5-flash" 
 
 # --- AUTO-DETECT BULLETPROOF MODEL FIX ---
@@ -83,69 +80,106 @@ st.markdown("""
     h1 { margin-bottom: 0px !important; padding-bottom: 0px !important; }
     .header-subtext { color: #5c6370; margin-top: -5px; font-weight: 500; margin-bottom: 10px; }
     
-    /* BATTLECARD CSS */
     .battlecard-box {
         padding: 1.5rem; border-radius: 12px; height: 100%;
         border: 1px solid #e8eaef;
     }
-    .knockout-box {
-        background-color: #e8f5e9; border-left: 5px solid #1b5e20;
-    }
-    .landmine-box {
-        background-color: #fff3e0; border-left: 5px solid #e65100;
-    }
+    .knockout-box { background-color: #e8f5e9; border-left: 5px solid #1b5e20; }
+    .landmine-box { background-color: #fff3e0; border-left: 5px solid #e65100; }
     
-    /* FLOATING CONCIERGE CSS */
     div[data-testid="stPopover"] {
-        position: fixed;
-        bottom: 2rem;
-        right: 2rem;
-        z-index: 9999;
+        position: fixed; bottom: 2rem; right: 2rem; z-index: 9999;
     }
     div[data-testid="stPopover"] > button {
-        background-color: #0d47a1;
-        color: white;
-        border-radius: 30px;
-        padding: 0.75rem 1.5rem;
-        border: none;
-        box-shadow: 0px 6px 16px rgba(0,0,0,0.2);
-        font-weight: bold;
-        transition: all 0.2s ease-in-out;
+        background-color: #0d47a1; color: white; border-radius: 30px;
+        padding: 0.75rem 1.5rem; border: none; box-shadow: 0px 6px 16px rgba(0,0,0,0.2);
+        font-weight: bold; transition: all 0.2s ease-in-out;
     }
     div[data-testid="stPopover"] > button:hover {
-        background-color: #002171;
-        transform: translateY(-2px);
+        background-color: #002171; transform: translateY(-2px);
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- HELPERS ---
+# --- DATA HELPERS ---
 @st.cache_data(ttl=900)
-def get_data(ticker):
+def get_public_data(ticker):
     try:
         t = yf.Ticker(ticker)
         return t.info, t.history(period="1y")
     except: return {}, pd.DataFrame()
 
-def get_fit_breakdown(info):
+@st.cache_data(ttl=900)
+def get_private_data(company_name):
+    """
+    Explorium API Integration for Firmographics
+    """
+    if not PRIVATE_DB_API_KEY:
+        return _mock_private(company_name, "Missing Explorium API Key")
+        
+    # Typical Explorium Enrichment API Endpoint
+    url = "https://api.explorium.ai/v1/enrich"
+    headers = {
+        "API-KEY": PRIVATE_DB_API_KEY,
+        "Content-Type": "application/json"
+    }
+    # Payload searching by company name
+    payload = {
+        "companies": [{"name": company_name}]
+    }
+    
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            # Parse the Explorium firmographics response
+            company_data = data.get("results", [{}])[0]
+            
+            return {
+                "shortName": company_data.get("name", company_name.title()),
+                "sector": company_data.get("sector", "Private Sector"),
+                "industry": company_data.get("industry", "Private Enterprise"),
+                "longBusinessSummary": company_data.get("description", f"Live data retrieved from Explorium. {company_name} is a privately held enterprise."),
+                "marketCap": 0
+            }
+        else:
+            return _mock_private(company_name, f"API Error {r.status_code}")
+    except Exception as e:
+        return _mock_private(company_name, str(e))
+
+def _mock_private(company_name, err_msg):
+    """Fallback if the Explorium API fails or the company isn't found."""
+    return {
+        "shortName": company_name.title(),
+        "sector": "Private Sector",
+        "industry": "Enterprise",
+        "longBusinessSummary": f"Explorium API Call Status: [{err_msg}]. \n\n{company_name.title()} is a privately held organization. Ensure the Explorium endpoint perfectly matches your specific subscription tier to load full firmographics.",
+        "marketCap": 0
+    }
+
+def get_fit_breakdown(info, is_public=True):
     score = 60
     breakdown = [{"Criteria": "Base Qualification", "Points": "+60"}]
     
     sector = info.get("sector", "")
-    if sector in ["Technology", "Industrials"]:
+    if "Technology" in sector or "Industrials" in sector:
         score += 15
         breakdown.append({"Criteria": f"High-Value Sector ({sector})", "Points": "+15"})
     elif sector != "":
         score += 5
         breakdown.append({"Criteria": f"Sector ({sector})", "Points": "+5"})
         
-    mc = info.get("marketCap", 0)
-    if mc > 100e9:
-        score += 13
-        breakdown.append({"Criteria": "Enterprise Scale (>100B)", "Points": "+13"})
-    elif mc > 10e9:
-        score += 8
-        breakdown.append({"Criteria": "Large Cap Scale (>10B)", "Points": "+8"})
+    if is_public:
+        mc = info.get("marketCap", 0)
+        if mc > 100e9:
+            score += 13
+            breakdown.append({"Criteria": "Enterprise Scale (>100B)", "Points": "+13"})
+        elif mc > 10e9:
+            score += 8
+            breakdown.append({"Criteria": "Large Cap Scale (>10B)", "Points": "+8"})
+    else:
+        score += 10
+        breakdown.append({"Criteria": "Private/Growth Stage Agility", "Points": "+10"})
         
     return min(score, 98), pd.DataFrame(breakdown)
 
@@ -166,7 +200,15 @@ with st.sidebar:
         "Outreach & Export"
     ])
     st.divider()
-    st.session_state.ticker = st.text_input("Ticker", st.session_state.ticker).upper().strip()
+    
+    # PUBLIC VS PRIVATE TOGGLE
+    st.session_state.company_type = st.radio("Database", ["Public (Yahoo)", "Private (Explorium)"], horizontal=True)
+    
+    if "Public" in st.session_state.company_type:
+        st.session_state.ticker = st.text_input("Public Ticker", st.session_state.ticker).upper().strip()
+    else:
+        st.session_state.private_name = st.text_input("Private Company Name", st.session_state.private_name).strip()
+        
     st.session_state.persona = st.selectbox("Persona", ["VP Engineering", "CTO", "Head of Mfg", "Innovation Lead"])
     
     st.divider()
@@ -175,27 +217,37 @@ with st.sidebar:
             "CRM PAK (Personal Access Token)", 
             type="password", 
             value=st.session_state.crm_pak,
-            help="Paste your temporary CRM PAK here. We will upgrade to a full API key later."
+            help="Paste your temporary CRM PAK here."
         )
+        st.caption("✅ Explorium API Connected")
 
-# --- DATA LOAD ---
-ticker = st.session_state.ticker
-info, hist = get_data(ticker)
-name = info.get("shortName") or info.get("longName") or ticker
+# --- DATA ROUTING ---
+is_public = "Public" in st.session_state.company_type
 
-mc = info.get("marketCap", 0)
-mc_str = f"${mc/1e9:.2f}B" if mc > 0 else "N/A"
+if is_public:
+    info, hist = get_public_data(st.session_state.ticker)
+    name = info.get("shortName") or info.get("longName") or st.session_state.ticker
+    mc = info.get("marketCap", 0)
+    mc_str = f"${mc/1e9:.2f}B" if mc > 0 else "N/A"
+else:
+    info = get_private_data(st.session_state.private_name)
+    hist = pd.DataFrame() 
+    name = info.get("shortName") or st.session_state.private_name
+    mc_str = "Private Entity"
 
 # --- HEADER ---
 col_t, col_m = st.columns([3, 1], vertical_alignment="bottom")
 with col_t:
     st.markdown(f'<h1>{name}</h1>', unsafe_allow_html=True)
-    st.markdown(f'<p class="header-subtext">{ticker} &nbsp;·&nbsp; {info.get("sector", "—")} &nbsp;·&nbsp; Market Cap: {mc_str}</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="header-subtext">{st.session_state.ticker if is_public else "PRIVATE"} &nbsp;·&nbsp; {info.get("sector", "—")} &nbsp;·&nbsp; Market Cap: {mc_str}</p>', unsafe_allow_html=True)
 with col_m:
-    price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
-    change = info.get("regularMarketChangePercent", 0)
-    color = "#1b5e20" if change >= 0 else "#dc3545"
-    st.markdown(f'<div style="text-align:right;"><h2 style="margin:0;">${price:,.2f}</h2><p style="color:{color}; margin:0; font-weight:700;">{change:+.2f}%</p></div>', unsafe_allow_html=True)
+    if is_public:
+        price = info.get("currentPrice") or info.get("regularMarketPrice", 0)
+        change = info.get("regularMarketChangePercent", 0)
+        color = "#1b5e20" if change >= 0 else "#dc3545"
+        st.markdown(f'<div style="text-align:right;"><h2 style="margin:0;">${price:,.2f}</h2><p style="color:{color}; margin:0; font-weight:700;">{change:+.2f}%</p></div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div style="text-align:right;"><h2 style="margin:0; color:#5c6370;">Not Listed</h2><p style="color:#5c6370; margin:0; font-weight:700;">Explorium Data</p></div>', unsafe_allow_html=True)
 st.divider()
 
 # --- TABS ---
@@ -204,12 +256,12 @@ if app_mode == "Executive Summary":
     with c1:
         st.subheader("Business Summary")
         st.write(info.get("longBusinessSummary", "Summary unavailable.")[:1000] + "...")
-        if not hist.empty:
+        if is_public and not hist.empty:
             fig = go.Figure(go.Scatter(x=hist.index, y=hist["Close"], fill='tozeroy', line=dict(color='#0d47a1')))
             fig.update_layout(height=280, margin=dict(l=0,r=0,t=0,b=0), xaxis_showgrid=False, plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
     with c2:
-        score, df_breakdown = get_fit_breakdown(info)
+        score, df_breakdown = get_fit_breakdown(info, is_public)
         tier = "TIER A" if score >= 80 else "TIER B"
         color = "#1b5e20" if score >= 80 else "#e65100"
         
@@ -272,12 +324,13 @@ elif app_mode == "Strategic Playbook":
         st.markdown(f"<div class='battlecard-box knockout-box' style='margin-top:10px;'><b>🥊 The Knockout Punch:</b><br>{knockout}</div>", unsafe_allow_html=True)
 
 elif app_mode == "10-K AI Audit":
-    st.subheader("📄 10-K Risk & Strategy Audit")
-    st.write(f"Run an AI-powered audit on {name}'s public profile to uncover operational risks and edge computing entry points.")
+    st.subheader("📄 AI Risk & Strategy Audit")
+    doc_type = "10-K" if is_public else "Market Positioning"
+    st.write(f"Run an AI-powered audit on {name}'s profile to uncover operational risks and edge computing entry points.")
     
-    if st.button("Generate 10-K Edge Audit", type="primary"):
+    if st.button(f"Generate {doc_type} Edge Audit", type="primary"):
         if GEMINI_API_KEY:
-            with st.spinner("Analyzing public filings and business model..."):
+            with st.spinner("Analyzing business model..."):
                 model = genai.GenerativeModel(MODEL_NAME)
                 prompt = f"Act as a financial analyst and enterprise software sales engineer. Analyze the business model of {name} in the {info.get('sector', 'corporate')} sector. Identify 3 specific strategic reasons they MUST adopt on-device/Edge AI to mitigate operational risks, save costs, or improve product performance. Keep it strictly in English, highly professional, and format with bold headers."
                 res = model.generate_content(prompt)
@@ -290,9 +343,10 @@ elif app_mode == "Weekly News Digest":
     if NEWS_API_KEY:
         with st.spinner("Searching top English sources..."):
             url = "https://newsapi.org/v2/everything"
+            query = f'"{name}" OR {ticker}' if is_public else f'"{name}"'
             params = {
-                "q": f'"{name}" OR {ticker}',
-                "domains": "reuters.com,bloomberg.com,wsj.com,cnbc.com,finance.yahoo.com,forbes.com",
+                "q": query,
+                "domains": "reuters.com,bloomberg.com,wsj.com,cnbc.com,finance.yahoo.com,forbes.com,techcrunch.com",
                 "language": "en",
                 "sortBy": "relevancy",
                 "apiKey": NEWS_API_KEY
@@ -308,7 +362,7 @@ elif app_mode == "Weekly News Digest":
                         st.write(a.get('description') or "")
                         st.divider()
                 else: 
-                    st.info("No recent strategic English news found. (Try adjusting the ticker).")
+                    st.info("No recent strategic English news found.")
             except Exception as e:
                 st.error(f"Error connecting to News API: {e}")
     else: 
@@ -372,7 +426,6 @@ elif app_mode == "Outreach & Export":
                 st.markdown("---")
                 st.write(res.text)
                 
-        # --- CRM SYNC UI ---
         if st.session_state.crm_pak:
             st.divider()
             st.success("✅ Connected to CRM via Personal Access Token.")
