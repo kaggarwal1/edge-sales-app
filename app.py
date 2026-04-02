@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Master Build
-Includes: Explorium API Integration (Moved to Top), 10-K Audit, CRM PAK, Strategic Playbook, TCO ROI.
+Includes: Explorium API Integration (Fixed 404), 10-K Audit, CRM PAK, Strategic Playbook, TCO ROI.
 """
 
 import os
@@ -116,30 +116,36 @@ def get_private_data(company_name):
     if not PRIVATE_DB_API_KEY:
         return _mock_private(company_name, "Missing Explorium API Key")
         
-    url = "https://api.explorium.ai/v1/enrich"
+    url = "https://api.explorium.ai/v1/businesses"
     headers = {
-        "API-KEY": PRIVATE_DB_API_KEY,
+        "Authorization": f"Bearer {PRIVATE_DB_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "companies": [{"name": company_name}]
+        "filters": {
+            "company_name": {
+                "values": [company_name]
+            }
+        }
     }
     
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=10)
         if r.status_code == 200:
             data = r.json()
-            company_data = data.get("results", [{}])[0]
+            # Safely grab the first result regardless of how Explorium keys their arrays
+            results = data.get("data") or data.get("businesses") or data.get("results") or [{}]
+            company_data = results[0] if results else {}
             
             return {
-                "shortName": company_data.get("name", company_name.title()),
-                "sector": company_data.get("sector", "Private Sector"),
+                "shortName": company_data.get("company_name", company_data.get("name", company_name.title())),
+                "sector": company_data.get("industry_category", "Private Sector"),
                 "industry": company_data.get("industry", "Private Enterprise"),
                 "longBusinessSummary": company_data.get("description", f"Live data retrieved from Explorium. {company_name} is a privately held enterprise."),
                 "marketCap": 0
             }
         else:
-            return _mock_private(company_name, f"API Error {r.status_code}")
+            return _mock_private(company_name, f"API Error {r.status_code}: Check Endpoint/Auth")
     except Exception as e:
         return _mock_private(company_name, str(e))
 
@@ -148,7 +154,7 @@ def _mock_private(company_name, err_msg):
         "shortName": company_name.title(),
         "sector": "Private Sector",
         "industry": "Enterprise",
-        "longBusinessSummary": f"Explorium API Call Status: [{err_msg}]. \n\n{company_name.title()} is a privately held organization. Ensure the Explorium endpoint perfectly matches your specific subscription tier to load full firmographics.",
+        "longBusinessSummary": f"Explorium API Call Status: [{err_msg}]. \n\n{company_name.title()} is a privately held organization.",
         "marketCap": 0
     }
 
@@ -187,7 +193,6 @@ with st.sidebar:
     
     st.divider()
     
-    # --- MOVED TO TOP FOR VISIBILITY ---
     st.markdown("**🔍 Target Account**")
     st.session_state.company_type = st.radio("Database", ["Public (Yahoo)", "Private (Explorium)"], horizontal=True, label_visibility="collapsed")
     
@@ -197,7 +202,6 @@ with st.sidebar:
         st.session_state.private_name = st.text_input("Private Company Name", st.session_state.private_name).strip()
     
     st.session_state.persona = st.selectbox("Persona", ["VP Engineering", "CTO", "Head of Mfg", "Innovation Lead"])
-    # -----------------------------------
     
     st.divider()
     app_mode = st.radio("Navigation", [
