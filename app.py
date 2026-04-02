@@ -1,6 +1,6 @@
 """
 Edge Impulse Sales Suite - Final Master Build
-Includes: Explorium API Integration, Clean Header, 10-K Audit, CRM PAK, Strategic Playbook, TCO ROI.
+Includes: Explorium API Integration (Moved to Top), 10-K Audit, CRM PAK, Strategic Playbook, TCO ROI.
 """
 
 import os
@@ -25,7 +25,7 @@ def _env(key: str, default: str = None):
     return os.getenv(key, default)
 
 # --- SESSION STATE ---
-if "company_type" not in st.session_state: st.session_state.company_type = "Public"
+if "company_type" not in st.session_state: st.session_state.company_type = "Public (Yahoo)"
 if "ticker" not in st.session_state: st.session_state.ticker = "DE"
 if "private_name" not in st.session_state: st.session_state.private_name = "Stripe"
 if "persona" not in st.session_state: st.session_state.persona = "VP Engineering"
@@ -34,7 +34,6 @@ if "crm_pak" not in st.session_state: st.session_state.crm_pak = ""
 
 NEWS_API_KEY = _env("NEWS_API_KEY")
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
-# EXPLORIUM API KEY HARDCODED
 PRIVATE_DB_API_KEY = _env("PRIVATE_DB_API_KEY", "241575b3-1b29-45ee-b196-37ce4545321e") 
 MODEL_NAME = "gemini-1.5-flash" 
 
@@ -117,13 +116,11 @@ def get_private_data(company_name):
     if not PRIVATE_DB_API_KEY:
         return _mock_private(company_name, "Missing Explorium API Key")
         
-    # Typical Explorium Enrichment API Endpoint
     url = "https://api.explorium.ai/v1/enrich"
     headers = {
         "API-KEY": PRIVATE_DB_API_KEY,
         "Content-Type": "application/json"
     }
-    # Payload searching by company name
     payload = {
         "companies": [{"name": company_name}]
     }
@@ -132,7 +129,6 @@ def get_private_data(company_name):
         r = requests.post(url, headers=headers, json=payload, timeout=10)
         if r.status_code == 200:
             data = r.json()
-            # Parse the Explorium firmographics response
             company_data = data.get("results", [{}])[0]
             
             return {
@@ -148,7 +144,6 @@ def get_private_data(company_name):
         return _mock_private(company_name, str(e))
 
 def _mock_private(company_name, err_msg):
-    """Fallback if the Explorium API fails or the company isn't found."""
     return {
         "shortName": company_name.title(),
         "sector": "Private Sector",
@@ -191,6 +186,20 @@ with st.sidebar:
     if os.path.isfile(logo_path): st.image(logo_path, use_container_width=True)
     
     st.divider()
+    
+    # --- MOVED TO TOP FOR VISIBILITY ---
+    st.markdown("**🔍 Target Account**")
+    st.session_state.company_type = st.radio("Database", ["Public (Yahoo)", "Private (Explorium)"], horizontal=True, label_visibility="collapsed")
+    
+    if "Public" in st.session_state.company_type:
+        st.session_state.ticker = st.text_input("Public Ticker", st.session_state.ticker).upper().strip()
+    else:
+        st.session_state.private_name = st.text_input("Private Company Name", st.session_state.private_name).strip()
+    
+    st.session_state.persona = st.selectbox("Persona", ["VP Engineering", "CTO", "Head of Mfg", "Innovation Lead"])
+    # -----------------------------------
+    
+    st.divider()
     app_mode = st.radio("Navigation", [
         "Executive Summary", 
         "Strategic Playbook", 
@@ -199,17 +208,6 @@ with st.sidebar:
         "ROI Calculator", 
         "Outreach & Export"
     ])
-    st.divider()
-    
-    # PUBLIC VS PRIVATE TOGGLE
-    st.session_state.company_type = st.radio("Database", ["Public (Yahoo)", "Private (Explorium)"], horizontal=True)
-    
-    if "Public" in st.session_state.company_type:
-        st.session_state.ticker = st.text_input("Public Ticker", st.session_state.ticker).upper().strip()
-    else:
-        st.session_state.private_name = st.text_input("Private Company Name", st.session_state.private_name).strip()
-        
-    st.session_state.persona = st.selectbox("Persona", ["VP Engineering", "CTO", "Head of Mfg", "Innovation Lead"])
     
     st.divider()
     with st.expander("⚙️ Settings & Integrations"):
